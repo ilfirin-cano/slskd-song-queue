@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Song Queue — slskd</title>
+<style>
+:root{color-scheme:dark;font:15px/1.5 Inter,system-ui,sans-serif;background:#11151c;color:#edf2f7}
+*{box-sizing:border-box}body{margin:0;padding:32px 16px;background:radial-gradient(ellipse at 20% 0,#26334a,transparent 55%),#11151c}
+main{max-width:1000px;margin:auto}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:28px}
+h1{font-size:24px;margin:0}h2{font-size:18px;margin:0 0 8px}.muted{color:#9ba7b7;font-size:13px}
+.card{background:#1b2029;border:1px solid #303846;border-radius:16px;padding:22px;margin-bottom:16px}
+textarea{width:100%;min-height:210px;resize:vertical;background:#11151c;border:1px solid #394353;border-radius:10px;padding:14px;color:#edf2f7;font:14px/1.7 ui-monospace,monospace}
+button{background:#929fff;color:#111629;border:0;border-radius:9px;padding:11px 17px;font-weight:700;cursor:pointer}button:disabled{opacity:.5;cursor:wait}
+.row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:14px}.error{color:#ff9da3;margin-top:10px;white-space:pre-wrap}
+.metrics{display:flex;gap:28px;flex-wrap:wrap;margin:16px 0}.metric strong{display:block;font-size:20px}
+table{width:100%;border-collapse:collapse;min-width:620px}th,td{text-align:left;padding:12px;border-bottom:1px solid #303846;vertical-align:top}th{color:#9ba7b7;font-weight:500}
+.wrap{overflow:auto;border:1px solid #303846;border-radius:10px}.pill{display:inline-block;border-radius:15px;padding:3px 8px;background:#293449;font-size:12px;white-space:nowrap}
+.pill.downloaded,.pill.queued{background:#173b30;color:#67e0b0}.pill.not_found,.pill.paused,.pill.monitoring_timeout{background:#423b23;color:#f0cf75}.pill.failed,.pill.error,.pill.slskd_error,.pill.cancelled{background:#40282d;color:#ff9da3}
+.bar{height:5px;background:#303846;border-radius:8px;overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;background:#8b9cff}
+@media(max-width:650px){body{padding:18px 10px}.card{padding:16px}.top{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body><main>
+<header class="top"><div><h1>Song Queue</h1><div class="muted">Поиск и очередь загрузок через slskd</div></div><div class="muted" id="health">Проверка сервиса…</div></header>
+<section class="card">
+  <h2>Список композиций</h2>
+  <p class="muted">Один трек на строку: Исполнитель — Название</p>
+  <textarea id="songs" placeholder="Daft Punk — Giorgio by Moroder&#10;Massive Attack — Teardrop"></textarea>
+  <div class="row"><span class="muted" id="count">0 композиций</span><button id="submit">Найти и скачать →</button></div>
+  <div class="error" id="error"></div>
+</section>
+<section class="card" id="results" hidden>
+  <h2>Результаты</h2>
+  <div class="metrics">
+    <div class="metric"><span class="muted">Отправлено</span><strong id="total">0</strong></div>
+    <div class="metric"><span class="muted">В очереди / скачивается / готово</span><strong id="queued">0</strong></div>
+    <div class="metric"><span class="muted">Не найдено</span><strong id="missing">0</strong></div>
+  </div>
+  <p class="muted" id="caption">Обновление в реальном времени</p>
+  <div class="bar"><i id="progress" style="width:0"></i></div>
+  <div class="wrap"><table><thead><tr><th>Композиция</th><th>Состояние</th><th>Файл / прогресс</th></tr></thead><tbody id="rows"></tbody></table></div>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const labels={pending:"Ожидает",searching:"Поиск",adding:"Добавление",queued:"В очереди",connecting:"Подключение",downloading:"Скачивается",downloaded:"Скачан",not_found:"Не найден",paused:"Пауза",failed:"Ошибка загрузки",cancelled:"Отменён",slskd_error:"Ошибка slskd",error:"Ошибка",monitoring_timeout:"Нет обновлений"};
+let timer=null;
+function parseSongs(){
+  return $("songs").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{
+    let parts=line.split(/\s+[—–-]\s+/);
+    if(parts.length<2) parts=line.split(/\s+\/\s+/);
+    if(parts.length<2) return null;
+    return {artist:parts.shift().trim(),title:parts.join(" - ").trim()};
+  }).filter(x=>x&&x.artist&&x.title);
+}
+function fmtBytes(n){
+  n=Number(n||0);if(n<1024)return n+" B";
+  const units=["KB","MB","GB","TB"];let i=-1;do{n/=1024;i++;}while(n>=1024&&i<units.length-1);
+  return n.toFixed(1)+" "+units[i];
+}
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function render(data){
+  $("results").hidden=false;
+  $("total").textContent=data.submitted;
+  $("queued").textContent=data.queued??0;
+  $("missing").textContent=data.not_found??0;
+  const finished=data.finished;
+  $("caption").textContent=finished?"Обработка завершена":"Обновление статусов автоматически";
+  const done=(data.results||[]).filter(x=>["downloaded","not_found","failed","cancelled","error","slskd_error"].includes(x.status)).length;
+  $("progress").style.width=(data.submitted?Math.round(done/data.submitted*100):0)+"%";
+  $("rows").innerHTML=(data.results||[]).map(item=>{
+    const song=item.song||{};
+    const label=esc((song.artist||"")+" — "+(song.title||""));
+    const status=item.status||"pending";
+    const pct=Math.max(0,Math.min(100,Number(item.percent||0)));
+    let details=item.filename?esc(item.filename):esc(item.message||"");
+    if(["downloading","downloaded","paused"].includes(status)){
+      details+="<div class='muted'>"+fmtBytes(item.bytes_transferred)+" / "+fmtBytes(item.size)+" · "+pct+"% · "+fmtBytes(item.speed||0)+"/s</div><div class='bar'><i style='width:"+pct+"%'></i></div>";
+    }
+    if(item.details) details+="<div class='muted'>"+esc(item.details)+"</div>";
+    if(item.match_score!==undefined) details+="<div class='muted'>Совпадение: "+Math.round(item.match_score*100)+"%</div>";
+    return "<tr><td>"+label+"</td><td><span class='pill "+esc(status)+"'>"+esc(labels[status]||status)+"</span></td><td>"+details+"</td></tr>";
+  }).join("");
+}
+async function poll(batchId){
+  try{
+    const response=await fetch("/batches/"+encodeURIComponent(batchId));
+    if(!response.ok) throw new Error("HTTP "+response.status);
+    const data=await response.json();render(data);
+    if(data.finished){clearInterval(timer);timer=null;$("submit").disabled=false;}
+  }catch(err){
+    $("error").textContent="Не удалось получить статус: "+err.message;
+    clearInterval(timer);timer=null;$("submit").disabled=false;
+  }
+}
+$("songs").addEventListener("input",()=>{$("count").textContent=parseSongs().length+" композиций";});
+$("submit").addEventListener("click",async()=>{
+  const songs=parseSongs();
+  $("error").textContent="";
+  if(!songs.length){$("error").textContent="Введите композиции в формате «Исполнитель — Название», по одной на строку.";return;}
+  $("submit").disabled=true;
+  try{
+    const response=await fetch("/songs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({songs})});
+    const data=await response.json();
+    if(!response.ok) throw new Error(data.detail||("HTTP "+response.status));
+    if(timer)clearInterval(timer);
+    await poll(data.batch_id);
+    timer=setInterval(()=>poll(data.batch_id),1500);
+  }catch(err){$("error").textContent=err.message;$("submit").disabled=false;}
+});
+fetch("/health").then(r=>r.json()).then(()=>{$("health").textContent="Сервис доступен";}).catch(()=>$("health").textContent="Нет связи с API");
+</script>
+</body></html>
