@@ -366,6 +366,14 @@ async def process_song(
                         if previous is None or candidate["score"] > previous["score"]:
                             candidates_by_key[key] = candidate
 
+                    # If this query already found an acceptable MP3, do not
+                    # spend another full search interval on the title-only variant.
+                    if deep_search and any(
+                        candidate["format"] == "MP3"
+                        for candidate in candidates_by_key.values()
+                    ):
+                        break
+
                 candidates = sorted(
                     candidates_by_key.values(),
                     key=lambda item: (item["format_priority"], item["score"], item["bitrate"]),
