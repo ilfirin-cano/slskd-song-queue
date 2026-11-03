@@ -167,7 +167,7 @@ $("submit").addEventListener("click",async()=>{
     activeBatchId=data.batch_id;
     if(timer)clearInterval(timer);
     await poll(data.batch_id);
-    timer=setInterval(()=>poll(data.batch_id),1500);
+    if(activeBatchId) timer=setInterval(()=>poll(data.batch_id),1500);
   }catch(err){$("error").textContent=err.message;$("submit").disabled=false;$("cancel").disabled=true;}
 });
 $("cancel").addEventListener("click",async()=>{
