@@ -38,9 +38,9 @@ details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cu
         <span class="muted">Время ожидания результатов по каждому треку.</span>
       </div>
       <div class="field">
-        <label for="deepSearchDuration">Длительность повторного поиска, секунд</label>
+        <label for="deepSearchDuration">Длительность одного запроса второго поиска, секунд</label>
         <input id="deepSearchDuration" type="number" min="10" max="300" step="5" value="60">
-        <span class="muted">Повторный проход использует более широкие запросы.</span>
+        <span class="muted">Каждый запрос второго прохода ждёт результаты указанное число секунд.</span>
       </div>
     </div>
     <label class="checkrow"><input id="retryNotFound" type="checkbox" checked> После первого прохода повторно искать ненайденные треки</label>
