@@ -21,6 +21,12 @@ MAX_RESULTS = int(os.getenv("MAX_RESULTS_PER_SONG", "100"))
 TRANSFER_POLL_INTERVAL = float(os.getenv("TRANSFER_POLL_INTERVAL", "2"))
 TRANSFER_MONITOR_HOURS = float(os.getenv("TRANSFER_MONITOR_HOURS", "24"))
 
+# slskd 0.24+ allows only one concurrent search/download operation per client.
+# Locks are process-wide so separate batches cannot race each other.
+SEARCH_LOCK = asyncio.Lock()
+DOWNLOAD_LOCK = asyncio.Lock()
+MAX_429_RETRIES = int(os.getenv("SLSKD_429_RETRIES", "5"))
+
 app = FastAPI(title="slskd Song Queue", version="2.0.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 BATCHES = {}
@@ -61,6 +67,25 @@ def match_score(song: Song, filename: str, bitrate: int = 0) -> float:
 
 def update_item(batch_id: str, index: int, **values):
     BATCHES[batch_id]["results"][index].update(values)
+
+async def post_with_429_retry(client, path: str, *, json_body):
+    """Retry slskd operations rejected while another operation is in flight."""
+    response = None
+    for attempt in range(MAX_429_RETRIES + 1):
+        response = await client.post(path, json=json_body)
+        if response.status_code != 429:
+            response.raise_for_status()
+            return response
+        if attempt >= MAX_429_RETRIES:
+            break
+        retry_after = response.headers.get("Retry-After")
+        try:
+            delay = float(retry_after) if retry_after else min(2 ** attempt, 8)
+        except ValueError:
+            delay = min(2 ** attempt, 8)
+        await asyncio.sleep(max(1.0, min(delay, 10.0)))
+    response.raise_for_status()
+    return response
 
 async def get_download_files(client):
     response = await client.get("/api/v0/transfers/downloads")
@@ -113,26 +138,44 @@ async def monitor_transfer(batch_id, index, username, filename):
     if BATCHES[batch_id]["results"][index]["status"] in {"queued", "connecting", "downloading", "paused"}:
         update_item(batch_id, index, status="monitoring_timeout", message="Истекло время наблюдения; проверьте состояние в slskd")
 
-async def process_song(batch_id, index, song):
-    update_item(batch_id, index, status="searching", message="Ищем совпадения в Soulseek")
+async def process_song(batch_id: str, index: int, song: Song):
+    update_item(batch_id, index, status="searching", message="Ожидаем очереди поиска в slskd")
     try:
-        async with httpx.AsyncClient(base_url=SLSKD_URL, headers={"X-API-Key": API_KEY}, timeout=20) as client:
-            search_id = str(uuid.uuid4())
-            response = await client.post("/api/v0/searches", json={
-                "id": search_id, "searchText": f"{song.artist} {song.title}",
-                "searchTimeout": SEARCH_TIMEOUT_MS, "responseLimit": MAX_RESULTS})
-            response.raise_for_status()
-            deadline = asyncio.get_running_loop().time() + MAX_WAIT_SECONDS
-            while asyncio.get_running_loop().time() < deadline:
-                state = await client.get(f"/api/v0/searches/{search_id}")
-                state.raise_for_status()
-                if state.json().get("isComplete") is True:
-                    break
-                await asyncio.sleep(POLL_INTERVAL)
-            response = await client.get(f"/api/v0/searches/{search_id}/responses")
-            response.raise_for_status()
+        async with httpx.AsyncClient(
+            base_url=SLSKD_URL,
+            headers={"X-API-Key": API_KEY},
+            timeout=20,
+        ) as client:
+            # Keep the full search lifecycle under one lock. slskd 0.24+
+            # rejects concurrent search operations with HTTP 429.
+            async with SEARCH_LOCK:
+                update_item(batch_id, index, status="searching", message="Ищем совпадения в Soulseek")
+                search_id = str(uuid.uuid4())
+                await post_with_429_retry(
+                    client,
+                    "/api/v0/searches",
+                    json_body={
+                        "id": search_id,
+                        "searchText": f"{song.artist} {song.title}",
+                        "searchTimeout": SEARCH_TIMEOUT_MS,
+                        "responseLimit": MAX_RESULTS,
+                    },
+                )
+
+                deadline = asyncio.get_running_loop().time() + MAX_WAIT_SECONDS
+                while asyncio.get_running_loop().time() < deadline:
+                    state_response = await client.get(f"/api/v0/searches/{search_id}")
+                    state_response.raise_for_status()
+                    if state_response.json().get("isComplete") is True:
+                        break
+                    await asyncio.sleep(POLL_INTERVAL)
+
+                results_response = await client.get(f"/api/v0/searches/{search_id}/responses")
+                results_response.raise_for_status()
+                payload = results_response.json()
+
             candidates = []
-            for peer in response.json() if isinstance(response.json(), list) else []:
+            for peer in payload if isinstance(payload, list) else []:
                 username = peer.get("username")
                 for file in peer.get("files", []) or []:
                     filename = file.get("filename") or file.get("fileName")
@@ -142,30 +185,77 @@ async def process_song(batch_id, index, song):
                         bitrate = int(file.get("bitRate") or file.get("bitrate") or 0)
                     except (TypeError, ValueError):
                         bitrate = 0
-                    candidates.append({"username": username, "filename": filename,
-                        "size": file.get("size", 0), "score": match_score(song, filename, bitrate)})
-            candidates.sort(key=lambda x: x["score"], reverse=True)
+                    candidates.append({
+                        "username": username,
+                        "filename": filename,
+                        "size": file.get("size", 0),
+                        "score": match_score(song, filename, bitrate),
+                    })
+
+            candidates.sort(key=lambda item: item["score"], reverse=True)
             if not candidates or candidates[0]["score"] < MIN_MATCH_SCORE:
-                update_item(batch_id, index, status="not_found", message="Подходящее совпадение не найдено", matches=len(candidates))
-                return
+                update_item(
+                    batch_id, index, status="not_found",
+                    message="Подходящее совпадение не найдено",
+                    matches=len(candidates),
+                )
+                return None
+
             best = candidates[0]
-            update_item(batch_id, index, status="adding", filename=best["filename"], peer=best["username"],
-                size=best["size"], match_score=round(best["score"], 3), message="Добавляем файл в очередь slskd")
-            queued = await client.post(f"/api/v0/transfers/downloads/{quote(best['username'], safe='')}",
-                json=[{"filename": best["filename"], "size": best["size"]}])
-            queued.raise_for_status()
+            update_item(
+                batch_id, index, status="adding",
+                filename=best["filename"],
+                peer=best["username"],
+                size=best["size"],
+                match_score=round(best["score"], 3),
+                message="Добавляем файл в очередь slskd",
+            )
+
+            # Serialize enqueue calls as well: newer slskd versions apply
+            # the same single-operation guard to download requests.
+            async with DOWNLOAD_LOCK:
+                await post_with_429_retry(
+                    client,
+                    f"/api/v0/transfers/downloads/{quote(best['username'], safe='')}",
+                    json_body=[{"filename": best["filename"], "size": best["size"]}],
+                )
+
             update_item(batch_id, index, status="queued", message="Файл добавлен в очередь slskd")
-        await monitor_transfer(batch_id, index, best["username"], best["filename"])
+
+        # Monitor transfers in the background so the next song can be searched
+        # while already-enqueued files are downloading.
+        return asyncio.create_task(
+            monitor_transfer(batch_id, index, best["username"], best["filename"])
+        )
     except httpx.HTTPStatusError as exc:
-        update_item(batch_id, index, status="slskd_error", message=f"slskd HTTP {exc.response.status_code}", details=exc.response.text[:400])
+        update_item(
+            batch_id, index, status="slskd_error",
+            message=f"slskd HTTP {exc.response.status_code}",
+            details=exc.response.text[:400],
+        )
     except (httpx.HTTPError, asyncio.TimeoutError) as exc:
-        update_item(batch_id, index, status="error", message="Не удалось связаться со slskd", details=str(exc)[:400])
+        update_item(
+            batch_id, index, status="error",
+            message="Не удалось связаться со slskd",
+            details=str(exc)[:400],
+        )
     except Exception as exc:
-        update_item(batch_id, index, status="error", message="Внутренняя ошибка", details=str(exc)[:400])
+        update_item(
+            batch_id, index, status="error",
+            message="Внутренняя ошибка",
+            details=str(exc)[:400],
+        )
+    return None
 
 async def run_batch(batch_id):
     batch = BATCHES[batch_id]
-    await asyncio.gather(*(process_song(batch_id, i, item["song_obj"]) for i, item in enumerate(batch["results"])))
+    monitor_tasks = await asyncio.gather(*(
+        process_song(batch_id, i, item["song_obj"])
+        for i, item in enumerate(batch["results"])
+    ))
+    active_monitors = [task for task in monitor_tasks if task is not None]
+    if active_monitors:
+        await asyncio.gather(*active_monitors, return_exceptions=True)
     batch["finished"] = True
     for item in batch["results"]:
         item.pop("song_obj", None)
