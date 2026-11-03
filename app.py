@@ -59,7 +59,7 @@ class SongList(BaseModel):
     search_duration_seconds: int = Field(default=SEARCH_DURATION_SECONDS, ge=5, le=180)
     retry_not_found: bool = Field(default=RETRY_NOT_FOUND_BY_DEFAULT)
     deep_search_duration_seconds: int = Field(default=DEEP_SEARCH_DURATION_SECONDS, ge=10, le=300)
-    max_parallel_searches: int = Field(default=DEFAULT_MAX_PARALLEL_SEARCHES, ge=1, le=10)
+    max_parallel_searches: int = Field(default=DEFAULT_MAX_PARALLEL_SEARCHES, ge=1, le=2)
 
 
 @app.get("/", include_in_schema=False)
@@ -382,10 +382,11 @@ async def process_song(
     search_duration_seconds: int,
     deep_search_duration_seconds: int,
     deep_search: bool = False,
+    serial_retry: bool = False,
 ):
     batch = BATCHES[batch_id]
     cancel_event = batch["cancel_event"]
-    attempt = 2 if deep_search else 1
+    attempt = 3 if deep_search and batch["results"][index].get("search_attempt", 1) >= 2 else (2 if deep_search or serial_retry else 1)
     threshold = DEEP_SEARCH_MIN_MATCH_SCORE if deep_search else MIN_MATCH_SCORE
 
     if deep_search:
@@ -397,14 +398,22 @@ async def process_song(
         queries = [f"{song.artist} {song.title}"]
         duration = search_duration_seconds
         response_limit = MAX_RESULTS
-        status_message = f"Первичный поиск ({duration} сек.)"
+        status_message = (
+            f"Контрольный поиск без параллельного режима ({duration} сек.)"
+            if serial_retry else f"Первичный поиск ({duration} сек.)"
+        )
 
     update_item(batch_id, index, status="searching", search_attempt=attempt, message=status_message)
 
     try:
-        # This semaphore limits live searches for this batch. The global POST
-        # gate only spaces their starts; it does not hold a lock while polling.
-        async with batch["search_semaphore"]:
+        # Parallel mode is capped at two (the slskd client-side limit).
+        # A serial confirmation pass is used for first-pass misses because
+        # slskd can occasionally complete concurrent searches with zero results.
+        semaphore = (
+            batch["serial_search_semaphore"]
+            if serial_retry else batch["search_semaphore"]
+        )
+        async with semaphore:
             if cancel_event.is_set():
                 raise BatchCancelled()
 
@@ -423,7 +432,8 @@ async def process_song(
                         search_attempt=attempt,
                         message=(
                             f"Расширенный поиск: запрос {query_index}/{len(queries)}"
-                            if deep_search else f"Поиск: {duration} сек."
+                            if deep_search
+                            else status_message
                         ),
                     )
                     payload = await search_slskd(
@@ -542,6 +552,34 @@ async def run_batch(batch_id):
         ))
         monitor_tasks.extend(task for task in first_pass if task is not None)
 
+        # If a batch used parallel searching and some searches came back empty,
+        # retry those exact queries one at a time before broadening the query.
+        if (
+            not batch["cancel_event"].is_set()
+            and settings["max_parallel_searches"] > 1
+        ):
+            parallel_misses = [
+                (index, item["song_obj"])
+                for index, item in enumerate(batch["results"])
+                if item["status"] == "not_found"
+            ]
+            if parallel_misses:
+                batch["serial_retry_count"] = len(parallel_misses)
+                batch["phase"] = "serial_retry"
+                serial_pass = await asyncio.gather(*(
+                    process_song(
+                        batch_id,
+                        index,
+                        song,
+                        settings["search_duration_seconds"],
+                        settings["deep_search_duration_seconds"],
+                        deep_search=False,
+                        serial_retry=True,
+                    )
+                    for index, song in parallel_misses
+                ))
+                monitor_tasks.extend(task for task in serial_pass if task is not None)
+
         if not batch["cancel_event"].is_set() and settings["retry_not_found"]:
             missing = [
                 (index, item["song_obj"])
@@ -597,14 +635,16 @@ async def queue_songs(request: SongList):
         "cancel_requested": False,
         "cancel_event": asyncio.Event(),
         "active_searches": set(),
-        "search_semaphore": asyncio.Semaphore(request.max_parallel_searches),
+        "search_semaphore": asyncio.Semaphore(min(request.max_parallel_searches, 2)),
+        "serial_search_semaphore": asyncio.Semaphore(1),
         "phase": "queued",
         "retry_count": 0,
+        "serial_retry_count": 0,
         "settings": {
             "search_duration_seconds": request.search_duration_seconds,
             "retry_not_found": request.retry_not_found,
             "deep_search_duration_seconds": request.deep_search_duration_seconds,
-            "max_parallel_searches": request.max_parallel_searches,
+            "max_parallel_searches": min(request.max_parallel_searches, 2),
             "search_start_interval_seconds": SEARCH_START_INTERVAL_SECONDS,
         },
         "results": [
@@ -668,6 +708,7 @@ async def get_batch(batch_id: str):
         "cancel_requested": batch["cancel_requested"],
         "phase": batch["phase"],
         "retry_count": batch["retry_count"],
+        "serial_retry_count": batch["serial_retry_count"],
         "active_searches": len(batch["active_searches"]),
         "settings": batch["settings"],
         "counts": counts,
