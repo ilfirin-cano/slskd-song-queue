@@ -14,12 +14,11 @@ from pydantic import BaseModel, Field
 SLSKD_URL = os.getenv("SLSKD_URL", "http://slskd:5030").rstrip("/")
 API_KEY = os.getenv("SLSKD_API_KEY", "")
 
-# SEARCH_TIMEOUT_MS and MAX_WAIT_SECONDS remain as backward-compatible defaults.
-SEARCH_TIMEOUT_MS = int(os.getenv("SEARCH_TIMEOUT_MS", "25000"))
-MAX_WAIT_SECONDS = int(os.getenv("MAX_WAIT_SECONDS", "35"))
+# SEARCH_TIMEOUT_MS is retained as a fallback for older .env files.
+LEGACY_SEARCH_TIMEOUT_MS = int(os.getenv("SEARCH_TIMEOUT_MS", "25000"))
 SEARCH_DURATION_SECONDS = int(os.getenv(
     "SEARCH_DURATION_SECONDS",
-    str(max(5, round(SEARCH_TIMEOUT_MS / 1000))),
+    str(max(5, round(LEGACY_SEARCH_TIMEOUT_MS / 1000))),
 ))
 SEARCH_WAIT_GRACE_SECONDS = int(os.getenv("SEARCH_WAIT_GRACE_SECONDS", "5"))
 DEEP_SEARCH_DURATION_SECONDS = int(os.getenv("DEEP_SEARCH_DURATION_SECONDS", "60"))
@@ -250,14 +249,13 @@ def transfer_status(file):
         percent = float(file.get("percentComplete") or 0)
     except (TypeError, ValueError):
         percent = 0
-    if "succeeded" in state or (
-        "completed" in state and not any(word in state for word in ("rejected", "errored", "failed", "timedout"))
-    ) or percent >= 100:
-        return "downloaded"
+
     if any(word in state for word in ("errored", "failed", "error", "rejected", "timedout")):
         return "failed"
     if "cancelled" in state or "canceled" in state:
         return "cancelled"
+    if "succeeded" in state or "completed" in state or percent >= 100:
+        return "downloaded"
     if "paused" in state:
         return "paused"
     if any(word in state for word in ("inprogress", "transferring", "downloading")):
