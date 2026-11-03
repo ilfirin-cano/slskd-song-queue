@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 SLSKD_URL = os.getenv("SLSKD_URL", "http://slskd:5030").rstrip("/")
 API_KEY = os.getenv("SLSKD_API_KEY", "")
 
-# SEARCH_TIMEOUT_MS is retained as a fallback for older .env files.
+# SEARCH_TIMEOUT_MS is retained as a fallback when the new seconds setting is absent.
 LEGACY_SEARCH_TIMEOUT_MS = int(os.getenv("SEARCH_TIMEOUT_MS", "25000"))
 SEARCH_DURATION_SECONDS = int(os.getenv(
     "SEARCH_DURATION_SECONDS",
