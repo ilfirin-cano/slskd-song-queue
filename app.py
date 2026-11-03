@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field
 SLSKD_URL = os.getenv("SLSKD_URL", "http://slskd:5030").rstrip("/")
 API_KEY = os.getenv("SLSKD_API_KEY", "")
 
-# SEARCH_TIMEOUT_MS is retained as a fallback when the new seconds setting is absent.
 LEGACY_SEARCH_TIMEOUT_MS = int(os.getenv("SEARCH_TIMEOUT_MS", "25000"))
 SEARCH_DURATION_SECONDS = int(os.getenv(
     "SEARCH_DURATION_SECONDS",
@@ -24,6 +23,8 @@ SEARCH_WAIT_GRACE_SECONDS = int(os.getenv("SEARCH_WAIT_GRACE_SECONDS", "5"))
 DEEP_SEARCH_DURATION_SECONDS = int(os.getenv("DEEP_SEARCH_DURATION_SECONDS", "60"))
 DEEP_SEARCH_MIN_MATCH_SCORE = float(os.getenv("DEEP_SEARCH_MIN_MATCH_SCORE", "0.50"))
 RETRY_NOT_FOUND_BY_DEFAULT = os.getenv("RETRY_NOT_FOUND_BY_DEFAULT", "true").lower() in {"1", "true", "yes", "on"}
+DEFAULT_MAX_PARALLEL_SEARCHES = int(os.getenv("MAX_PARALLEL_SEARCHES", "3"))
+SEARCH_START_INTERVAL_SECONDS = max(1.0, float(os.getenv("SEARCH_START_INTERVAL_SECONDS", "1")))
 
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "1"))
 MIN_MATCH_SCORE = float(os.getenv("MIN_MATCH_SCORE", "0.52"))
@@ -33,14 +34,19 @@ TRANSFER_POLL_INTERVAL = float(os.getenv("TRANSFER_POLL_INTERVAL", "2"))
 TRANSFER_MONITOR_HOURS = float(os.getenv("TRANSFER_MONITOR_HOURS", "24"))
 MAX_429_RETRIES = int(os.getenv("SLSKD_429_RETRIES", "5"))
 
-# slskd 0.24+ rejects overlapping search/download API operations with HTTP 429.
-# Mutating API operations are serialized; actual file transfers continue independently.
-SLSKD_OPERATION_LOCK = asyncio.Lock()
+# Serialize short write requests, not their full search lifecycles. This allows
+# active searches to overlap while their POST /searches calls are rate-spaced.
+SLSKD_POST_LOCK = asyncio.Lock()
+LAST_SLSKD_POST_AT = 0.0
 ALLOWED_EXTENSIONS = {".mp3", ".flac"}
 
-app = FastAPI(title="slskd Song Queue", version="2.1.0")
+app = FastAPI(title="slskd Song Queue", version="2.2.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 BATCHES = {}
+
+
+class BatchCancelled(Exception):
+    """Raised when the user interrupts a batch."""
 
 
 class Song(BaseModel):
@@ -53,6 +59,7 @@ class SongList(BaseModel):
     search_duration_seconds: int = Field(default=SEARCH_DURATION_SECONDS, ge=5, le=180)
     retry_not_found: bool = Field(default=RETRY_NOT_FOUND_BY_DEFAULT)
     deep_search_duration_seconds: int = Field(default=DEEP_SEARCH_DURATION_SECONDS, ge=10, le=300)
+    max_parallel_searches: int = Field(default=DEFAULT_MAX_PARALLEL_SEARCHES, ge=1, le=10)
 
 
 @app.get("/", include_in_schema=False)
@@ -66,6 +73,8 @@ async def get_settings():
         "search_duration_seconds": SEARCH_DURATION_SECONDS,
         "retry_not_found": RETRY_NOT_FOUND_BY_DEFAULT,
         "deep_search_duration_seconds": DEEP_SEARCH_DURATION_SECONDS,
+        "max_parallel_searches": DEFAULT_MAX_PARALLEL_SEARCHES,
+        "search_start_interval_seconds": SEARCH_START_INTERVAL_SECONDS,
     }
 
 
@@ -81,7 +90,6 @@ def file_extension(filename: str) -> str:
 
 
 def format_priority(filename: str) -> int:
-    # MP3 is the requested preferred format; FLAC is the fallback.
     return {".mp3": 2, ".flac": 1}.get(file_extension(filename), 0)
 
 
@@ -105,28 +113,55 @@ def update_item(batch_id: str, index: int, **values):
     BATCHES[batch_id]["results"][index].update(values)
 
 
-async def post_with_429_retry(client, path: str, *, json_body):
-    """Retry slskd operations rejected while another operation is in flight."""
+async def post_with_429_retry(client, path: str, *, json_body, cancel_event=None):
+    """Serialize POSTs and leave a minimum one-second gap between their starts."""
+    global LAST_SLSKD_POST_AT
     response = None
-    for attempt in range(MAX_429_RETRIES + 1):
-        response = await client.post(path, json=json_body)
-        if response.status_code != 429:
-            response.raise_for_status()
-            return response
-        if attempt >= MAX_429_RETRIES:
-            break
-        retry_after = response.headers.get("Retry-After")
-        try:
-            delay = float(retry_after) if retry_after else min(2 ** attempt, 8)
-        except ValueError:
-            delay = min(2 ** attempt, 8)
-        await asyncio.sleep(max(1.0, min(delay, 10.0)))
+    async with SLSKD_POST_LOCK:
+        loop = asyncio.get_running_loop()
+        for attempt in range(MAX_429_RETRIES + 1):
+            if cancel_event is not None and cancel_event.is_set():
+                raise BatchCancelled()
+
+            wait_for_gap = SEARCH_START_INTERVAL_SECONDS - (loop.time() - LAST_SLSKD_POST_AT)
+            if wait_for_gap > 0:
+                await asyncio.sleep(wait_for_gap)
+
+            if cancel_event is not None and cancel_event.is_set():
+                raise BatchCancelled()
+
+            LAST_SLSKD_POST_AT = loop.time()
+            response = await client.post(path, json=json_body)
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response
+
+            if attempt >= MAX_429_RETRIES:
+                break
+            retry_after = response.headers.get("Retry-After")
+            try:
+                delay = float(retry_after) if retry_after else min(2 ** attempt, 8)
+            except ValueError:
+                delay = min(2 ** attempt, 8)
+            await asyncio.sleep(max(1.0, min(delay, 10.0)))
+
     response.raise_for_status()
     return response
 
 
-async def search_slskd(client, query: str, duration_seconds: int, response_limit: int):
-    """Run one search lifecycle. The caller must hold SLSKD_OPERATION_LOCK."""
+async def stop_search(client, search_id: str):
+    response = await client.delete(f"/api/v0/searches/{search_id}")
+    if response.status_code not in {200, 202, 204, 404}:
+        response.raise_for_status()
+
+
+async def search_slskd(client, batch_id: str, query: str, duration_seconds: int, response_limit: int):
+    """Start a search and poll it without locking out other active searches."""
+    batch = BATCHES[batch_id]
+    cancel_event = batch["cancel_event"]
+    if cancel_event.is_set():
+        raise BatchCancelled()
+
     search_id = str(uuid.uuid4())
     await post_with_429_retry(
         client,
@@ -137,34 +172,44 @@ async def search_slskd(client, query: str, duration_seconds: int, response_limit
             "searchTimeout": duration_seconds * 1000,
             "responseLimit": response_limit,
         },
+        cancel_event=cancel_event,
     )
 
+    batch["active_searches"].add(search_id)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + duration_seconds + SEARCH_WAIT_GRACE_SECONDS
     completed = False
-    while loop.time() < deadline:
-        state_response = await client.get(f"/api/v0/searches/{search_id}")
-        state_response.raise_for_status()
-        if state_response.json().get("isComplete") is True:
-            completed = True
-            break
-        await asyncio.sleep(POLL_INTERVAL)
+    try:
+        if cancel_event.is_set():
+            raise BatchCancelled()
 
-    results_response = await client.get(f"/api/v0/searches/{search_id}/responses")
-    results_response.raise_for_status()
-    payload = results_response.json()
+        while loop.time() < deadline:
+            if cancel_event.is_set():
+                raise BatchCancelled()
+            state_response = await client.get(f"/api/v0/searches/{search_id}")
+            state_response.raise_for_status()
+            if state_response.json().get("isComplete") is True:
+                completed = True
+                break
+            await asyncio.sleep(POLL_INTERVAL)
 
-    # If our local deadline expired before slskd completed the search,
-    # cancel the lingering search before starting the next one.
-    if not completed:
-        try:
-            cancel_response = await client.delete(f"/api/v0/searches/{search_id}")
-            if cancel_response.status_code not in {200, 202, 204, 404}:
-                cancel_response.raise_for_status()
-        except httpx.HTTPError:
-            pass
+        if cancel_event.is_set():
+            raise BatchCancelled()
 
-    return payload
+        results_response = await client.get(f"/api/v0/searches/{search_id}/responses")
+        results_response.raise_for_status()
+        payload = results_response.json()
+        if cancel_event.is_set():
+            raise BatchCancelled()
+        return payload
+    finally:
+        # Stop searches that timed out locally or were interrupted by the user.
+        if not completed or cancel_event.is_set():
+            try:
+                await stop_search(client, search_id)
+            except httpx.HTTPError:
+                pass
+        batch["active_searches"].discard(search_id)
 
 
 def extract_audio_candidates(song: Song, payload, minimum_score: float):
@@ -200,7 +245,6 @@ def extract_audio_candidates(song: Song, payload, minimum_score: float):
                 "format": extension.lstrip(".").upper(),
             })
 
-    # Prefer MP3 over FLAC; within a format, use filename match and bitrate.
     candidates.sort(
         key=lambda item: (item["format_priority"], item["score"], item["bitrate"]),
         reverse=True,
@@ -210,15 +254,11 @@ def extract_audio_candidates(song: Song, payload, minimum_score: float):
 
 def deep_search_queries(song: Song):
     title = song.title.strip()
-    # Remove common parenthetical tags and featured-artist suffixes for a broader query.
     clean_title = re.sub(r"\s+(?:feat\.?|ft\.?|featuring)\s+.+$", "", title, flags=re.IGNORECASE)
     clean_title = re.sub(r"\s*[\[(].*?[\])]\s*", " ", clean_title)
     clean_title = " ".join(clean_title.split())
 
-    queries = [
-        f"{song.artist} {clean_title}".strip(),
-        clean_title,
-    ]
+    queries = [f"{song.artist} {clean_title}".strip(), clean_title]
     unique = []
     seen = set()
     for query in queries:
@@ -305,6 +345,17 @@ async def monitor_transfer(batch_id, index, username, filename):
         )
 
 
+def mark_cancelled(batch_id: str, index: int, attempt: int):
+    item = BATCHES[batch_id]["results"][index]
+    if item["status"] not in {"queued", "connecting", "downloading", "paused", "downloaded"}:
+        update_item(
+            batch_id, index,
+            status="cancelled",
+            search_attempt=attempt,
+            message="Прервано пользователем",
+        )
+
+
 async def process_song(
     batch_id: str,
     index: int,
@@ -313,42 +364,40 @@ async def process_song(
     deep_search_duration_seconds: int,
     deep_search: bool = False,
 ):
+    batch = BATCHES[batch_id]
+    cancel_event = batch["cancel_event"]
     attempt = 2 if deep_search else 1
     threshold = DEEP_SEARCH_MIN_MATCH_SCORE if deep_search else MIN_MATCH_SCORE
+
     if deep_search:
         queries = deep_search_queries(song)
         duration = deep_search_duration_seconds
         response_limit = DEEP_SEARCH_RESPONSE_LIMIT
-        update_item(
-            batch_id, index,
-            status="searching",
-            search_attempt=attempt,
-            message=f"Повторный расширенный поиск ({duration} сек.)",
-        )
+        status_message = f"Повторный расширенный поиск ({duration} сек.)"
     else:
         queries = [f"{song.artist} {song.title}"]
         duration = search_duration_seconds
         response_limit = MAX_RESULTS
-        update_item(
-            batch_id, index,
-            status="searching",
-            search_attempt=attempt,
-            message=f"Первичный поиск ({duration} сек.)",
-        )
+        status_message = f"Первичный поиск ({duration} сек.)"
+
+    update_item(batch_id, index, status="searching", search_attempt=attempt, message=status_message)
 
     try:
-        async with httpx.AsyncClient(
-            base_url=SLSKD_URL,
-            headers={"X-API-Key": API_KEY},
-            timeout=30,
-        ) as client:
-            candidates_by_key = {}
+        # This semaphore limits live searches for this batch. The global POST
+        # gate only spaces their starts; it does not hold a lock while polling.
+        async with batch["search_semaphore"]:
+            if cancel_event.is_set():
+                raise BatchCancelled()
 
-            # Hold the operation lock through search AND enqueue. This ensures
-            # the selected file is queued immediately before the next search
-            # starts, so real transfers overlap with subsequent searches.
-            async with SLSKD_OPERATION_LOCK:
+            async with httpx.AsyncClient(
+                base_url=SLSKD_URL,
+                headers={"X-API-Key": API_KEY},
+                timeout=30,
+            ) as client:
+                candidates_by_key = {}
                 for query_index, query in enumerate(queries, start=1):
+                    if cancel_event.is_set():
+                        raise BatchCancelled()
                     update_item(
                         batch_id, index,
                         status="searching",
@@ -358,7 +407,9 @@ async def process_song(
                             if deep_search else f"Поиск: {duration} сек."
                         ),
                     )
-                    payload = await search_slskd(client, query, duration, response_limit)
+                    payload = await search_slskd(
+                        client, batch_id, query, duration, response_limit
+                    )
                     found = extract_audio_candidates(song, payload, threshold)
                     for candidate in found:
                         key = (candidate["username"], candidate["filename"])
@@ -366,13 +417,14 @@ async def process_song(
                         if previous is None or candidate["score"] > previous["score"]:
                             candidates_by_key[key] = candidate
 
-                    # If this query already found an acceptable MP3, do not
-                    # spend another full search interval on the title-only variant.
                     if deep_search and any(
                         candidate["format"] == "MP3"
                         for candidate in candidates_by_key.values()
                     ):
                         break
+
+                if cancel_event.is_set():
+                    raise BatchCancelled()
 
                 candidates = sorted(
                     candidates_by_key.values(),
@@ -410,6 +462,7 @@ async def process_song(
                     client,
                     f"/api/v0/transfers/downloads/{quote(best['username'], safe='')}",
                     json_body=[{"filename": best["filename"], "size": best["size"]}],
+                    cancel_event=cancel_event,
                 )
 
                 update_item(
@@ -418,10 +471,11 @@ async def process_song(
                     message=f"{best['format']} добавлен в очередь slskd",
                 )
 
-        # The transfer keeps running while the next song is searched.
         return asyncio.create_task(
             monitor_transfer(batch_id, index, best["username"], best["filename"])
         )
+    except BatchCancelled:
+        mark_cancelled(batch_id, index, attempt)
     except httpx.HTTPStatusError as exc:
         update_item(
             batch_id, index,
@@ -469,9 +523,7 @@ async def run_batch(batch_id):
         ))
         monitor_tasks.extend(task for task in first_pass if task is not None)
 
-        # The first-pass searches are complete. Re-search misses now, without
-        # waiting for active downloads: their transfer tasks run in the background.
-        if settings["retry_not_found"]:
+        if not batch["cancel_event"].is_set() and settings["retry_not_found"]:
             missing = [
                 (index, item["song_obj"])
                 for index, item in enumerate(batch["results"])
@@ -493,12 +545,18 @@ async def run_batch(batch_id):
                 ))
                 monitor_tasks.extend(task for task in second_pass if task is not None)
 
-        batch["phase"] = "waiting_for_transfers"
+        batch["search_finished"] = True
+        batch["phase"] = (
+            "cancelled_waiting_for_transfers"
+            if batch["cancel_event"].is_set()
+            else "waiting_for_transfers"
+        )
         if monitor_tasks:
             await asyncio.gather(*monitor_tasks, return_exceptions=True)
     finally:
+        batch["search_finished"] = True
         batch["finished"] = True
-        batch["phase"] = "finished"
+        batch["phase"] = "cancelled" if batch["cancel_event"].is_set() else "finished"
         for item in batch["results"]:
             item.pop("song_obj", None)
 
@@ -516,12 +574,19 @@ async def queue_songs(request: SongList):
     batch_id = str(uuid.uuid4())
     BATCHES[batch_id] = {
         "finished": False,
+        "search_finished": False,
+        "cancel_requested": False,
+        "cancel_event": asyncio.Event(),
+        "active_searches": set(),
+        "search_semaphore": asyncio.Semaphore(request.max_parallel_searches),
         "phase": "queued",
         "retry_count": 0,
         "settings": {
             "search_duration_seconds": request.search_duration_seconds,
             "retry_not_found": request.retry_not_found,
             "deep_search_duration_seconds": request.deep_search_duration_seconds,
+            "max_parallel_searches": request.max_parallel_searches,
+            "search_start_interval_seconds": SEARCH_START_INTERVAL_SECONDS,
         },
         "results": [
             {
@@ -539,6 +604,27 @@ async def queue_songs(request: SongList):
     }
     asyncio.create_task(run_batch(batch_id))
     return {"batch_id": batch_id, "submitted": len(request.songs)}
+
+
+@app.post("/batches/{batch_id}/cancel")
+async def cancel_batch(batch_id: str):
+    batch = BATCHES.get(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    if batch["search_finished"] or batch["finished"]:
+        return {
+            "cancel_requested": False,
+            "message": "Поисковая часть уже завершена; поставленные загрузки продолжаются",
+        }
+
+    batch["cancel_requested"] = True
+    batch["phase"] = "cancelling"
+    batch["cancel_event"].set()
+    return {
+        "cancel_requested": True,
+        "active_searches": len(batch["active_searches"]),
+        "message": "Прерываем активные и ожидающие поиски",
+    }
 
 
 @app.get("/batches/{batch_id}")
@@ -559,8 +645,11 @@ async def get_batch(batch_id: str):
         "batch_id": batch_id,
         "submitted": len(results),
         "finished": batch["finished"],
+        "search_finished": batch["search_finished"],
+        "cancel_requested": batch["cancel_requested"],
         "phase": batch["phase"],
         "retry_count": batch["retry_count"],
+        "active_searches": len(batch["active_searches"]),
         "settings": batch["settings"],
         "counts": counts,
         "queued": sum(
