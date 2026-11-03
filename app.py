@@ -127,46 +127,45 @@ async def post_with_429_retry(client, path: str, *, json_body):
 
 
 async def search_slskd(client, query: str, duration_seconds: int, response_limit: int):
-    """Run one complete search lifecycle while holding the slskd operation lock."""
-    async with SLSKD_OPERATION_LOCK:
-        search_id = str(uuid.uuid4())
-        await post_with_429_retry(
-            client,
-            "/api/v0/searches",
-            json_body={
-                "id": search_id,
-                "searchText": query,
-                "searchTimeout": duration_seconds * 1000,
-                "responseLimit": response_limit,
-            },
-        )
+    """Run one search lifecycle. The caller must hold SLSKD_OPERATION_LOCK."""
+    search_id = str(uuid.uuid4())
+    await post_with_429_retry(
+        client,
+        "/api/v0/searches",
+        json_body={
+            "id": search_id,
+            "searchText": query,
+            "searchTimeout": duration_seconds * 1000,
+            "responseLimit": response_limit,
+        },
+    )
 
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + duration_seconds + SEARCH_WAIT_GRACE_SECONDS
-        completed = False
-        while loop.time() < deadline:
-            state_response = await client.get(f"/api/v0/searches/{search_id}")
-            state_response.raise_for_status()
-            if state_response.json().get("isComplete") is True:
-                completed = True
-                break
-            await asyncio.sleep(POLL_INTERVAL)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + duration_seconds + SEARCH_WAIT_GRACE_SECONDS
+    completed = False
+    while loop.time() < deadline:
+        state_response = await client.get(f"/api/v0/searches/{search_id}")
+        state_response.raise_for_status()
+        if state_response.json().get("isComplete") is True:
+            completed = True
+            break
+        await asyncio.sleep(POLL_INTERVAL)
 
-        results_response = await client.get(f"/api/v0/searches/{search_id}/responses")
-        results_response.raise_for_status()
-        payload = results_response.json()
+    results_response = await client.get(f"/api/v0/searches/{search_id}/responses")
+    results_response.raise_for_status()
+    payload = results_response.json()
 
-        # If our local deadline expired before slskd completed the search,
-        # cancel the lingering search before starting the next one.
-        if not completed:
-            try:
-                cancel_response = await client.delete(f"/api/v0/searches/{search_id}")
-                if cancel_response.status_code not in {200, 202, 204, 404}:
-                    cancel_response.raise_for_status()
-            except httpx.HTTPError:
-                pass
+    # If our local deadline expired before slskd completed the search,
+    # cancel the lingering search before starting the next one.
+    if not completed:
+        try:
+            cancel_response = await client.delete(f"/api/v0/searches/{search_id}")
+            if cancel_response.status_code not in {200, 202, 204, 404}:
+                cancel_response.raise_for_status()
+        except httpx.HTTPError:
+            pass
 
-        return payload
+    return payload
 
 
 def extract_audio_candidates(song: Song, payload, minimum_score: float):
@@ -245,18 +244,21 @@ async def get_download_files(client):
 
 
 def transfer_status(file):
-    state = str(file.get("state", "")).lower().replace("_", "").replace(" ", "")
-    if state in {"succeeded", "completed", "complete"} or file.get("percentComplete", 0) >= 100:
+    raw_state = str(file.get("state", "")).lower()
+    state = re.sub(r"[^a-z]", "", raw_state)
+    if "succeeded" in state or (
+        "completed" in state and not any(word in state for word in ("rejected", "errored", "failed", "timedout"))
+    ) or file.get("percentComplete", 0) >= 100:
         return "downloaded"
-    if state in {"errored", "failed", "error"}:
+    if any(word in state for word in ("errored", "failed", "error", "rejected", "timedout")):
         return "failed"
-    if state in {"cancelled", "canceled"}:
+    if "cancelled" in state or "canceled" in state:
         return "cancelled"
-    if state == "paused":
+    if "paused" in state:
         return "paused"
-    if state in {"inprogress", "transferring", "downloading"}:
+    if any(word in state for word in ("inprogress", "transferring", "downloading")):
         return "downloading"
-    if state in {"initializing", "connecting", "requested"}:
+    if any(word in state for word in ("initializing", "connecting", "requested")):
         return "connecting"
     return "queued"
 
@@ -339,71 +341,74 @@ async def process_song(
             timeout=30,
         ) as client:
             candidates_by_key = {}
-            for query_index, query in enumerate(queries, start=1):
-                update_item(
-                    batch_id, index,
-                    status="searching",
-                    search_attempt=attempt,
-                    message=(
-                        f"Расширенный поиск: запрос {query_index}/{len(queries)}"
-                        if deep_search else f"Поиск: {duration} сек."
-                    ),
-                )
-                payload = await search_slskd(client, query, duration, response_limit)
-                found = extract_audio_candidates(song, payload, threshold)
-                for candidate in found:
-                    key = (candidate["username"], candidate["filename"])
-                    previous = candidates_by_key.get(key)
-                    if previous is None or candidate["score"] > previous["score"]:
-                        candidates_by_key[key] = candidate
 
-            candidates = sorted(
-                candidates_by_key.values(),
-                key=lambda item: (item["format_priority"], item["score"], item["bitrate"]),
-                reverse=True,
-            )
-
-            if not candidates:
-                update_item(
-                    batch_id, index,
-                    status="not_found",
-                    search_attempt=attempt,
-                    message=(
-                        "Не найдено даже после расширенного поиска"
-                        if deep_search else "Подходящий MP3/FLAC не найден"
-                    ),
-                    matches=0,
-                )
-                return None
-
-            best = candidates[0]
-            update_item(
-                batch_id, index,
-                status="adding",
-                search_attempt=attempt,
-                filename=best["filename"],
-                peer=best["username"],
-                size=best["size"],
-                match_score=round(best["score"], 3),
-                audio_format=best["format"],
-                message=f"Добавляем {best['format']} в очередь slskd",
-            )
-
-            # The API queue operation is serialized, but the actual transfer
-            # starts independently and can run while the next search is active.
+            # Hold the operation lock through search AND enqueue. This ensures
+            # the selected file is queued immediately before the next search
+            # starts, so real transfers overlap with subsequent searches.
             async with SLSKD_OPERATION_LOCK:
+                for query_index, query in enumerate(queries, start=1):
+                    update_item(
+                        batch_id, index,
+                        status="searching",
+                        search_attempt=attempt,
+                        message=(
+                            f"Расширенный поиск: запрос {query_index}/{len(queries)}"
+                            if deep_search else f"Поиск: {duration} сек."
+                        ),
+                    )
+                    payload = await search_slskd(client, query, duration, response_limit)
+                    found = extract_audio_candidates(song, payload, threshold)
+                    for candidate in found:
+                        key = (candidate["username"], candidate["filename"])
+                        previous = candidates_by_key.get(key)
+                        if previous is None or candidate["score"] > previous["score"]:
+                            candidates_by_key[key] = candidate
+
+                candidates = sorted(
+                    candidates_by_key.values(),
+                    key=lambda item: (item["format_priority"], item["score"], item["bitrate"]),
+                    reverse=True,
+                )
+
+                if not candidates:
+                    update_item(
+                        batch_id, index,
+                        status="not_found",
+                        search_attempt=attempt,
+                        message=(
+                            "Не найдено даже после расширенного поиска"
+                            if deep_search else "Подходящий MP3/FLAC не найден"
+                        ),
+                        matches=0,
+                    )
+                    return None
+
+                best = candidates[0]
+                update_item(
+                    batch_id, index,
+                    status="adding",
+                    search_attempt=attempt,
+                    filename=best["filename"],
+                    peer=best["username"],
+                    size=best["size"],
+                    match_score=round(best["score"], 3),
+                    audio_format=best["format"],
+                    message=f"Добавляем {best['format']} в очередь slskd",
+                )
+
                 await post_with_429_retry(
                     client,
                     f"/api/v0/transfers/downloads/{quote(best['username'], safe='')}",
                     json_body=[{"filename": best["filename"], "size": best["size"]}],
                 )
 
-            update_item(
-                batch_id, index,
-                status="queued",
-                message=f"{best['format']} добавлен в очередь slskd",
-            )
+                update_item(
+                    batch_id, index,
+                    status="queued",
+                    message=f"{best['format']} добавлен в очередь slskd",
+                )
 
+        # The transfer keeps running while the next song is searched.
         return asyncio.create_task(
             monitor_transfer(batch_id, index, best["username"], best["filename"])
         )
