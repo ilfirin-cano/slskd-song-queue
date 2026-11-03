@@ -31,6 +31,13 @@ details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cu
   <h2>Список композиций</h2>
   <p class="muted">Один трек на строку: Исполнитель — Название. Другие форматы, включая LRC, игнорируются.</p>
   <textarea id="songs" placeholder="Daft Punk — Giorgio by Moroder&#10;Massive Attack — Teardrop"></textarea>
+  <div class="settings-grid">
+    <div class="field">
+      <label for="maxParallelSearches">Одновременно активных поисков</label>
+      <input id="maxParallelSearches" type="number" min="1" max="10" step="1" value="3">
+      <span class="muted">Новые поиски стартуют не чаще одного раза в секунду. Загрузки выполняются параллельно.</span>
+    </div>
+  </div>
   <details>
     <summary>Настройки поиска</summary>
     <div class="settings-grid">
@@ -43,11 +50,6 @@ details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cu
         <label for="deepSearchDuration">Длительность одного запроса второго поиска, секунд</label>
         <input id="deepSearchDuration" type="number" min="10" max="300" step="5" value="60">
         <span class="muted">Каждый запрос второго прохода ждёт результаты указанное число секунд.</span>
-      </div>
-      <div class="field">
-        <label for="maxParallelSearches">Одновременно активных поисков</label>
-        <input id="maxParallelSearches" type="number" min="1" max="10" step="1" value="3">
-        <span class="muted">Максимальное число активных поисков. Новые поиски стартуют с интервалом не менее 1 секунды.</span>
       </div>
     </div>
     <label class="checkrow"><input id="retryNotFound" type="checkbox" checked> После первого прохода повторно искать ненайденные треки</label>
