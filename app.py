@@ -150,9 +150,28 @@ async def post_with_429_retry(client, path: str, *, json_body, cancel_event=None
 
 
 async def stop_search(client, search_id: str):
-    response = await client.delete(f"/api/v0/searches/{search_id}")
-    if response.status_code not in {200, 202, 204, 404}:
-        response.raise_for_status()
+    """Cancel one active slskd search without racing other write requests."""
+    global LAST_SLSKD_POST_AT
+    response = None
+    async with SLSKD_POST_LOCK:
+        loop = asyncio.get_running_loop()
+        for attempt in range(MAX_429_RETRIES + 1):
+            wait_for_gap = SEARCH_START_INTERVAL_SECONDS - (loop.time() - LAST_SLSKD_POST_AT)
+            if wait_for_gap > 0:
+                await asyncio.sleep(wait_for_gap)
+            LAST_SLSKD_POST_AT = loop.time()
+            response = await client.delete(f"/api/v0/searches/{search_id}")
+            if response.status_code in {200, 202, 204, 404}:
+                return
+            if response.status_code != 429 or attempt >= MAX_429_RETRIES:
+                response.raise_for_status()
+            retry_after = response.headers.get("Retry-After")
+            try:
+                delay = float(retry_after) if retry_after else min(2 ** attempt, 8)
+            except ValueError:
+                delay = min(2 ** attempt, 8)
+            await asyncio.sleep(max(1.0, min(delay, 10.0)))
+    response.raise_for_status()
 
 
 async def search_slskd(client, batch_id: str, query: str, duration_seconds: int, response_limit: int):
