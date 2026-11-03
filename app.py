@@ -246,9 +246,13 @@ async def get_download_files(client):
 def transfer_status(file):
     raw_state = str(file.get("state", "")).lower()
     state = re.sub(r"[^a-z]", "", raw_state)
+    try:
+        percent = float(file.get("percentComplete") or 0)
+    except (TypeError, ValueError):
+        percent = 0
     if "succeeded" in state or (
         "completed" in state and not any(word in state for word in ("rejected", "errored", "failed", "timedout"))
-    ) or file.get("percentComplete", 0) >= 100:
+    ) or percent >= 100:
         return "downloaded"
     if any(word in state for word in ("errored", "failed", "error", "rejected", "timedout")):
         return "failed"
