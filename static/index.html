@@ -10,8 +10,10 @@ main{max-width:1000px;margin:auto}.top{display:flex;justify-content:space-betwee
 h1{font-size:24px;margin:0}h2{font-size:18px;margin:0 0 8px}.muted{color:#9ba7b7;font-size:13px}
 .card{background:#1b2029;border:1px solid #303846;border-radius:16px;padding:22px;margin-bottom:16px}
 textarea{width:100%;min-height:210px;resize:vertical;background:#11151c;border:1px solid #394353;border-radius:10px;padding:14px;color:#edf2f7;font:14px/1.7 ui-monospace,monospace}
-button{background:#929fff;color:#111629;border:0;border-radius:9px;padding:11px 17px;font-weight:700;cursor:pointer}button:disabled{opacity:.5;cursor:wait}
-.row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:14px}.error{color:#ff9da3;margin-top:10px;white-space:pre-wrap}
+button{background:#929fff;color:#111629;border:0;border-radius:9px;padding:11px 17px;font-weight:700;cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}
+button.secondary{background:#343d4c;color:#e8edf5}button.danger{background:#8f3942;color:#fff}
+.row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:14px}.actions{display:flex;gap:8px;flex-wrap:wrap}
+.error{color:#ff9da3;margin-top:10px;white-space:pre-wrap}
 .metrics{display:flex;gap:28px;flex-wrap:wrap;margin:16px 0}.metric strong{display:block;font-size:20px}
 table{width:100%;border-collapse:collapse;min-width:620px}th,td{text-align:left;padding:12px;border-bottom:1px solid #303846;vertical-align:top}th{color:#9ba7b7;font-weight:500}
 .wrap{overflow:auto;border:1px solid #303846;border-radius:10px}.pill{display:inline-block;border-radius:15px;padding:3px 8px;background:#293449;font-size:12px;white-space:nowrap}
@@ -20,7 +22,7 @@ table{width:100%;border-collapse:collapse;min-width:620px}th,td{text-align:left;
 details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cursor:pointer;font-weight:600}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
 .field{display:flex;flex-direction:column;gap:5px}.field label{font-size:13px;color:#c4ccda}.field input[type=number]{width:100%;background:#11151c;border:1px solid #394353;border-radius:8px;padding:9px;color:#edf2f7;font:inherit}
 .checkrow{display:flex;align-items:center;gap:9px;margin-top:14px;color:#c4ccda;font-size:13px}.checkrow input{width:16px;height:16px}
-@media(max-width:650px){body{padding:18px 10px}.card{padding:16px}.top{align-items:flex-start;flex-direction:column}.settings-grid{grid-template-columns:1fr}}
+@media(max-width:650px){body{padding:18px 10px}.card{padding:16px}.top{align-items:flex-start;flex-direction:column}.settings-grid{grid-template-columns:1fr}.row{align-items:flex-start;flex-direction:column}}
 </style>
 </head>
 <body><main>
@@ -42,10 +44,21 @@ details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cu
         <input id="deepSearchDuration" type="number" min="10" max="300" step="5" value="60">
         <span class="muted">Каждый запрос второго прохода ждёт результаты указанное число секунд.</span>
       </div>
+      <div class="field">
+        <label for="maxParallelSearches">Одновременно активных поисков</label>
+        <input id="maxParallelSearches" type="number" min="1" max="10" step="1" value="3">
+        <span class="muted">Максимальное число активных поисков. Новые поиски стартуют с интервалом не менее 1 секунды.</span>
+      </div>
     </div>
     <label class="checkrow"><input id="retryNotFound" type="checkbox" checked> После первого прохода повторно искать ненайденные треки</label>
   </details>
-  <div class="row"><span class="muted" id="count">0 композиций</span><button id="submit">Найти и скачать →</button></div>
+  <div class="row">
+    <span class="muted" id="count">0 композиций</span>
+    <div class="actions">
+      <button id="submit">Найти и скачать →</button>
+      <button id="cancel" class="danger" disabled>Прервать</button>
+    </div>
+  </div>
   <div class="error" id="error"></div>
 </section>
 <section class="card" id="results" hidden>
@@ -54,6 +67,7 @@ details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cu
     <div class="metric"><span class="muted">Отправлено</span><strong id="total">0</strong></div>
     <div class="metric"><span class="muted">В очереди / скачивается / готово</span><strong id="queued">0</strong></div>
     <div class="metric"><span class="muted">Не найдено</span><strong id="missing">0</strong></div>
+    <div class="metric"><span class="muted">Активных поисков</span><strong id="activeSearches">0</strong></div>
   </div>
   <p class="muted" id="caption">Обновление статусов автоматически</p>
   <div class="bar"><i id="progress" style="width:0"></i></div>
@@ -62,9 +76,10 @@ details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cu
 </main>
 <script>
 const $=id=>document.getElementById(id);
-const labels={pending:"Ожидает",searching:"Поиск",adding:"Добавление",queued:"В очереди",connecting:"Подключение",downloading:"Скачивается",downloaded:"Скачан",not_found:"Не найден",paused:"Пауза",failed:"Ошибка загрузки",cancelled:"Отменён",slskd_error:"Ошибка slskd",error:"Ошибка",monitoring_timeout:"Нет обновлений"};
-const phases={queued:"Ожидание запуска",initial_search:"Первичный поиск",deep_search:"Повторный поиск ненайденных треков",waiting_for_transfers:"Ожидание завершения загрузок",finished:"Обработка завершена"};
+const labels={pending:"Ожидает",searching:"Поиск",adding:"Добавление",queued:"В очереди",connecting:"Подключение",downloading:"Скачивается",downloaded:"Скачан",not_found:"Не найден",paused:"Пауза",failed:"Ошибка загрузки",cancelled:"Прервано",slskd_error:"Ошибка slskd",error:"Ошибка",monitoring_timeout:"Нет обновлений"};
+const phases={queued:"Ожидание запуска",initial_search:"Первичный поиск",deep_search:"Повторный поиск ненайденных треков",cancelling:"Останавливаем активные поиски…",cancelled_waiting_for_transfers:"Поиск прерван; уже добавленные загрузки продолжаются",waiting_for_transfers:"Поиск закончен; ожидаем завершения загрузок",finished:"Обработка завершена",cancelled:"Поиск прерван"};
 let timer=null;
+let activeBatchId=null;
 function parseSongs(){
   return $("songs").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{
     let parts=line.split(/\s+[—–-]\s+/);
@@ -84,6 +99,7 @@ function render(data){
   $("total").textContent=data.submitted;
   $("queued").textContent=data.queued??0;
   $("missing").textContent=data.not_found??0;
+  $("activeSearches").textContent=data.active_searches??0;
   $("caption").textContent=(phases[data.phase]||"Обновление статусов")+(data.retry_count?(" · повторный проход: "+data.retry_count+" трек(ов)"):"");
   const done=(data.results||[]).filter(x=>["downloaded","not_found","failed","cancelled","error","slskd_error"].includes(x.status)).length;
   $("progress").style.width=(data.submitted?Math.round(done/data.submitted*100):0)+"%";
@@ -102,13 +118,24 @@ function render(data){
     if(item.match_score!==undefined) details+="<div class='muted'>Совпадение: "+Math.round(item.match_score*100)+"%</div>";
     return "<tr><td>"+label+"</td><td><span class='pill "+esc(status)+"'>"+esc(labels[status]||status)+"</span></td><td>"+details+"</td></tr>";
   }).join("");
+
+  const canCancel=!data.search_finished&&!data.finished&&!data.cancel_requested;
+  $("cancel").disabled=!canCancel;
+  if(data.cancel_requested||data.phase==="cancelling") $("cancel").textContent="Прерываем…";
+  else if(data.search_finished) $("cancel").textContent="Поиск завершён";
+  else $("cancel").textContent="Прервать";
 }
 async function poll(batchId){
   try{
     const response=await fetch("/batches/"+encodeURIComponent(batchId));
     if(!response.ok) throw new Error("HTTP "+response.status);
     const data=await response.json();render(data);
-    if(data.finished){clearInterval(timer);timer=null;$("submit").disabled=false;}
+    if(data.finished){
+      clearInterval(timer);timer=null;
+      activeBatchId=null;
+      $("submit").disabled=false;
+      $("cancel").disabled=true;
+    }
   }catch(err){
     $("error").textContent="Не удалось получить статус: "+err.message;
     clearInterval(timer);timer=null;$("submit").disabled=false;
@@ -120,28 +147,51 @@ $("submit").addEventListener("click",async()=>{
   $("error").textContent="";
   const searchDuration=Number($("searchDuration").value);
   const deepSearchDuration=Number($("deepSearchDuration").value);
+  const maxParallelSearches=Number($("maxParallelSearches").value);
   if(!songs.length){$("error").textContent="Введите композиции в формате «Исполнитель — Название», по одной на строку.";return;}
   if(!Number.isInteger(searchDuration)||searchDuration<5||searchDuration>180){$("error").textContent="Длительность первого поиска должна быть от 5 до 180 секунд.";return;}
   if(!Number.isInteger(deepSearchDuration)||deepSearchDuration<10||deepSearchDuration>300){$("error").textContent="Длительность повторного поиска должна быть от 10 до 300 секунд.";return;}
+  if(!Number.isInteger(maxParallelSearches)||maxParallelSearches<1||maxParallelSearches>10){$("error").textContent="Число параллельных поисков должно быть от 1 до 10.";return;}
   $("submit").disabled=true;
+  $("cancel").disabled=true;
   try{
     const response=await fetch("/songs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       songs,
       search_duration_seconds:searchDuration,
       retry_not_found:$("retryNotFound").checked,
-      deep_search_duration_seconds:deepSearchDuration
+      deep_search_duration_seconds:deepSearchDuration,
+      max_parallel_searches:maxParallelSearches
     })});
     const data=await response.json();
     if(!response.ok) throw new Error(data.detail||("HTTP "+response.status));
+    activeBatchId=data.batch_id;
     if(timer)clearInterval(timer);
     await poll(data.batch_id);
     timer=setInterval(()=>poll(data.batch_id),1500);
-  }catch(err){$("error").textContent=err.message;$("submit").disabled=false;}
+  }catch(err){$("error").textContent=err.message;$("submit").disabled=false;$("cancel").disabled=true;}
+});
+$("cancel").addEventListener("click",async()=>{
+  if(!activeBatchId)return;
+  $("cancel").disabled=true;
+  $("cancel").textContent="Прерываем…";
+  $("error").textContent="";
+  try{
+    const response=await fetch("/batches/"+encodeURIComponent(activeBatchId)+"/cancel",{method:"POST"});
+    const result=await response.json();
+    if(!response.ok) throw new Error(result.detail||("HTTP "+response.status));
+    if(!result.cancel_requested) $("caption").textContent=result.message||"Поиск уже завершён";
+    await poll(activeBatchId);
+  }catch(err){
+    $("error").textContent="Не удалось прервать поиск: "+err.message;
+    $("cancel").disabled=false;
+    $("cancel").textContent="Прервать";
+  }
 });
 fetch("/settings").then(r=>r.json()).then(settings=>{
   $("searchDuration").value=settings.search_duration_seconds??25;
   $("deepSearchDuration").value=settings.deep_search_duration_seconds??60;
   $("retryNotFound").checked=settings.retry_not_found??true;
+  $("maxParallelSearches").value=settings.max_parallel_searches??3;
 }).catch(()=>{});
 fetch("/health").then(r=>r.json()).then(()=>{$("health").textContent="Сервис доступен";}).catch(()=>$("health").textContent="Нет связи с API");
 </script>
