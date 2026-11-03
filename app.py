@@ -21,10 +21,9 @@ MAX_RESULTS = int(os.getenv("MAX_RESULTS_PER_SONG", "100"))
 TRANSFER_POLL_INTERVAL = float(os.getenv("TRANSFER_POLL_INTERVAL", "2"))
 TRANSFER_MONITOR_HOURS = float(os.getenv("TRANSFER_MONITOR_HOURS", "24"))
 
-# slskd 0.24+ allows only one concurrent search/download operation per client.
-# Locks are process-wide so separate batches cannot race each other.
-SEARCH_LOCK = asyncio.Lock()
-DOWNLOAD_LOCK = asyncio.Lock()
+# slskd 0.24+ rejects overlapping search/download operations with HTTP 429.
+# One process-wide lock serializes mutations across all batches.
+SLSKD_OPERATION_LOCK = asyncio.Lock()
 MAX_429_RETRIES = int(os.getenv("SLSKD_429_RETRIES", "5"))
 
 app = FastAPI(title="slskd Song Queue", version="2.0.0")
@@ -148,7 +147,7 @@ async def process_song(batch_id: str, index: int, song: Song):
         ) as client:
             # Keep the full search lifecycle under one lock. slskd 0.24+
             # rejects concurrent search operations with HTTP 429.
-            async with SEARCH_LOCK:
+            async with SLSKD_OPERATION_LOCK:
                 update_item(batch_id, index, status="searching", message="Ищем совпадения в Soulseek")
                 search_id = str(uuid.uuid4())
                 await post_with_429_retry(
@@ -213,7 +212,7 @@ async def process_song(batch_id: str, index: int, song: Song):
 
             # Serialize enqueue calls as well: newer slskd versions apply
             # the same single-operation guard to download requests.
-            async with DOWNLOAD_LOCK:
+            async with SLSKD_OPERATION_LOCK:
                 await post_with_429_retry(
                     client,
                     f"/api/v0/transfers/downloads/{quote(best['username'], safe='')}",
