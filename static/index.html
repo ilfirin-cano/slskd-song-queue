@@ -121,7 +121,8 @@ function render(data){
 
   const canCancel=!data.search_finished&&!data.finished&&!data.cancel_requested;
   $("cancel").disabled=!canCancel;
-  if(data.cancel_requested||data.phase==="cancelling") $("cancel").textContent="Прерываем…";
+  if(data.cancel_requested&&!data.search_finished||data.phase==="cancelling") $("cancel").textContent="Прерываем…";
+  else if(data.cancel_requested&&data.search_finished) $("cancel").textContent="Прервано";
   else if(data.search_finished) $("cancel").textContent="Поиск завершён";
   else $("cancel").textContent="Прервать";
 }
