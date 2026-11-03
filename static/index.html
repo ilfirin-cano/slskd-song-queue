@@ -17,15 +17,34 @@ table{width:100%;border-collapse:collapse;min-width:620px}th,td{text-align:left;
 .wrap{overflow:auto;border:1px solid #303846;border-radius:10px}.pill{display:inline-block;border-radius:15px;padding:3px 8px;background:#293449;font-size:12px;white-space:nowrap}
 .pill.downloaded,.pill.queued{background:#173b30;color:#67e0b0}.pill.not_found,.pill.paused,.pill.monitoring_timeout{background:#423b23;color:#f0cf75}.pill.failed,.pill.error,.pill.slskd_error,.pill.cancelled{background:#40282d;color:#ff9da3}
 .bar{height:5px;background:#303846;border-radius:8px;overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;background:#8b9cff}
-@media(max-width:650px){body{padding:18px 10px}.card{padding:16px}.top{align-items:flex-start;flex-direction:column}}
+details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cursor:pointer;font-weight:600}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
+.field{display:flex;flex-direction:column;gap:5px}.field label{font-size:13px;color:#c4ccda}.field input[type=number]{width:100%;background:#11151c;border:1px solid #394353;border-radius:8px;padding:9px;color:#edf2f7;font:inherit}
+.checkrow{display:flex;align-items:center;gap:9px;margin-top:14px;color:#c4ccda;font-size:13px}.checkrow input{width:16px;height:16px}
+@media(max-width:650px){body{padding:18px 10px}.card{padding:16px}.top{align-items:flex-start;flex-direction:column}.settings-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body><main>
-<header class="top"><div><h1>Song Queue</h1><div class="muted">Поиск и очередь загрузок через slskd</div></div><div class="muted" id="health">Проверка сервиса…</div></header>
+<header class="top"><div><h1>Song Queue</h1><div class="muted">Поиск MP3 / FLAC и очередь загрузок через slskd</div></div><div class="muted" id="health">Проверка сервиса…</div></header>
 <section class="card">
   <h2>Список композиций</h2>
-  <p class="muted">Один трек на строку: Исполнитель — Название</p>
+  <p class="muted">Один трек на строку: Исполнитель — Название. Другие форматы, включая LRC, игнорируются.</p>
   <textarea id="songs" placeholder="Daft Punk — Giorgio by Moroder&#10;Massive Attack — Teardrop"></textarea>
+  <details>
+    <summary>Настройки поиска</summary>
+    <div class="settings-grid">
+      <div class="field">
+        <label for="searchDuration">Длительность первого поиска, секунд</label>
+        <input id="searchDuration" type="number" min="5" max="180" step="5" value="25">
+        <span class="muted">Время ожидания результатов по каждому треку.</span>
+      </div>
+      <div class="field">
+        <label for="deepSearchDuration">Длительность повторного поиска, секунд</label>
+        <input id="deepSearchDuration" type="number" min="10" max="300" step="5" value="60">
+        <span class="muted">Повторный проход использует более широкие запросы.</span>
+      </div>
+    </div>
+    <label class="checkrow"><input id="retryNotFound" type="checkbox" checked> После первого прохода повторно искать ненайденные треки</label>
+  </details>
   <div class="row"><span class="muted" id="count">0 композиций</span><button id="submit">Найти и скачать →</button></div>
   <div class="error" id="error"></div>
 </section>
@@ -36,7 +55,7 @@ table{width:100%;border-collapse:collapse;min-width:620px}th,td{text-align:left;
     <div class="metric"><span class="muted">В очереди / скачивается / готово</span><strong id="queued">0</strong></div>
     <div class="metric"><span class="muted">Не найдено</span><strong id="missing">0</strong></div>
   </div>
-  <p class="muted" id="caption">Обновление в реальном времени</p>
+  <p class="muted" id="caption">Обновление статусов автоматически</p>
   <div class="bar"><i id="progress" style="width:0"></i></div>
   <div class="wrap"><table><thead><tr><th>Композиция</th><th>Состояние</th><th>Файл / прогресс</th></tr></thead><tbody id="rows"></tbody></table></div>
 </section>
@@ -44,6 +63,7 @@ table{width:100%;border-collapse:collapse;min-width:620px}th,td{text-align:left;
 <script>
 const $=id=>document.getElementById(id);
 const labels={pending:"Ожидает",searching:"Поиск",adding:"Добавление",queued:"В очереди",connecting:"Подключение",downloading:"Скачивается",downloaded:"Скачан",not_found:"Не найден",paused:"Пауза",failed:"Ошибка загрузки",cancelled:"Отменён",slskd_error:"Ошибка slskd",error:"Ошибка",monitoring_timeout:"Нет обновлений"};
+const phases={queued:"Ожидание запуска",initial_search:"Первичный поиск",deep_search:"Повторный поиск ненайденных треков",waiting_for_transfers:"Ожидание завершения загрузок",finished:"Обработка завершена"};
 let timer=null;
 function parseSongs(){
   return $("songs").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{
@@ -64,8 +84,7 @@ function render(data){
   $("total").textContent=data.submitted;
   $("queued").textContent=data.queued??0;
   $("missing").textContent=data.not_found??0;
-  const finished=data.finished;
-  $("caption").textContent=finished?"Обработка завершена":"Обновление статусов автоматически";
+  $("caption").textContent=(phases[data.phase]||"Обновление статусов")+(data.retry_count?(" · повторный проход: "+data.retry_count+" трек(ов)"):"");
   const done=(data.results||[]).filter(x=>["downloaded","not_found","failed","cancelled","error","slskd_error"].includes(x.status)).length;
   $("progress").style.width=(data.submitted?Math.round(done/data.submitted*100):0)+"%";
   $("rows").innerHTML=(data.results||[]).map(item=>{
@@ -74,6 +93,8 @@ function render(data){
     const status=item.status||"pending";
     const pct=Math.max(0,Math.min(100,Number(item.percent||0)));
     let details=item.filename?esc(item.filename):esc(item.message||"");
+    if(item.audio_format) details+=" <span class='pill'>"+esc(item.audio_format)+"</span>";
+    if(item.search_attempt>1) details+="<div class='muted'>Повторный поиск</div>";
     if(["downloading","downloaded","paused"].includes(status)){
       details+="<div class='muted'>"+fmtBytes(item.bytes_transferred)+" / "+fmtBytes(item.size)+" · "+pct+"% · "+fmtBytes(item.speed||0)+"/s</div><div class='bar'><i style='width:"+pct+"%'></i></div>";
     }
@@ -97,10 +118,19 @@ $("songs").addEventListener("input",()=>{$("count").textContent=parseSongs().len
 $("submit").addEventListener("click",async()=>{
   const songs=parseSongs();
   $("error").textContent="";
+  const searchDuration=Number($("searchDuration").value);
+  const deepSearchDuration=Number($("deepSearchDuration").value);
   if(!songs.length){$("error").textContent="Введите композиции в формате «Исполнитель — Название», по одной на строку.";return;}
+  if(!Number.isInteger(searchDuration)||searchDuration<5||searchDuration>180){$("error").textContent="Длительность первого поиска должна быть от 5 до 180 секунд.";return;}
+  if(!Number.isInteger(deepSearchDuration)||deepSearchDuration<10||deepSearchDuration>300){$("error").textContent="Длительность повторного поиска должна быть от 10 до 300 секунд.";return;}
   $("submit").disabled=true;
   try{
-    const response=await fetch("/songs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({songs})});
+    const response=await fetch("/songs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+      songs,
+      search_duration_seconds:searchDuration,
+      retry_not_found:$("retryNotFound").checked,
+      deep_search_duration_seconds:deepSearchDuration
+    })});
     const data=await response.json();
     if(!response.ok) throw new Error(data.detail||("HTTP "+response.status));
     if(timer)clearInterval(timer);
@@ -108,6 +138,11 @@ $("submit").addEventListener("click",async()=>{
     timer=setInterval(()=>poll(data.batch_id),1500);
   }catch(err){$("error").textContent=err.message;$("submit").disabled=false;}
 });
+fetch("/settings").then(r=>r.json()).then(settings=>{
+  $("searchDuration").value=settings.search_duration_seconds??25;
+  $("deepSearchDuration").value=settings.deep_search_duration_seconds??60;
+  $("retryNotFound").checked=settings.retry_not_found??true;
+}).catch(()=>{});
 fetch("/health").then(r=>r.json()).then(()=>{$("health").textContent="Сервис доступен";}).catch(()=>$("health").textContent="Нет связи с API");
 </script>
 </body></html>
