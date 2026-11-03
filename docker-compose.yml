@@ -1,28 +1,24 @@
 services:
-  slskd:
-    image: slskd/slskd:latest
-    container_name: slskd
-    ports:
-      - "5030:5030"
-      - "5031:5031"
-      - "50300:50300"
-    environment:
-      SLSKD_REMOTE_CONFIGURATION: "true"
-    volumes:
-      - ./slskd-data:/app
-    restart: unless-stopped
-
   song-queue:
     build: .
     container_name: slskd-song-queue
     ports:
       - "8080:8080"
     environment:
-      SLSKD_URL: "http://slskd:5030"
+      SLSKD_URL: "${SLSKD_URL:-http://slskd:5030}"
       SLSKD_API_KEY: "${SLSKD_API_KEY}"
-      SEARCH_TIMEOUT_MS: "25000"
-      MAX_WAIT_SECONDS: "35"
-      MIN_MATCH_SCORE: "0.52"
-    depends_on:
+      SEARCH_TIMEOUT_MS: "${SEARCH_TIMEOUT_MS:-25000}"
+      MAX_WAIT_SECONDS: "${MAX_WAIT_SECONDS:-35}"
+      MIN_MATCH_SCORE: "${MIN_MATCH_SCORE:-0.52}"
+      POLL_INTERVAL: "${POLL_INTERVAL:-1}"
+      MAX_RESULTS_PER_SONG: "${MAX_RESULTS_PER_SONG:-100}"
+      TRANSFER_POLL_INTERVAL: "${TRANSFER_POLL_INTERVAL:-2}"
+      TRANSFER_MONITOR_HOURS: "${TRANSFER_MONITOR_HOURS:-24}"
+    networks:
       - slskd
     restart: unless-stopped
+
+networks:
+  slskd:
+    external: true
+    name: "${SLSKD_NETWORK:-slskd_default}"
