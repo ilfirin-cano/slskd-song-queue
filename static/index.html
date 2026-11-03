@@ -34,8 +34,8 @@ details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cu
   <div class="settings-grid">
     <div class="field">
       <label for="maxParallelSearches">Одновременно активных поисков</label>
-      <input id="maxParallelSearches" type="number" min="1" max="10" step="1" value="3">
-      <span class="muted">Новые поиски стартуют не чаще одного раза в секунду. Загрузки выполняются параллельно.</span>
+      <input id="maxParallelSearches" type="number" min="1" max="2" step="1" value="2">
+      <span class="muted">Максимум 2 активных поиска. Старт каждого следующего — не раньше чем через секунду.</span>
     </div>
   </div>
   <details>
@@ -79,7 +79,7 @@ details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cu
 <script>
 const $=id=>document.getElementById(id);
 const labels={pending:"Ожидает",searching:"Поиск",adding:"Добавление",queued:"В очереди",connecting:"Подключение",downloading:"Скачивается",downloaded:"Скачан",not_found:"Не найден",paused:"Пауза",failed:"Ошибка загрузки",cancelled:"Прервано",slskd_error:"Ошибка slskd",error:"Ошибка",monitoring_timeout:"Нет обновлений"};
-const phases={queued:"Ожидание запуска",initial_search:"Первичный поиск",deep_search:"Повторный поиск ненайденных треков",cancelling:"Останавливаем активные поиски…",cancelled_waiting_for_transfers:"Поиск прерван; уже добавленные загрузки продолжаются",waiting_for_transfers:"Поиск закончен; ожидаем завершения загрузок",finished:"Обработка завершена",cancelled:"Поиск прерван"};
+const phases={queued:"Ожидание запуска",initial_search:"Первичный поиск",serial_retry:"Перепроверка пустых результатов по одному",deep_search:"Повторный расширенный поиск ненайденных треков",cancelling:"Останавливаем активные поиски…",cancelled_waiting_for_transfers:"Поиск прерван; уже добавленные загрузки продолжаются",waiting_for_transfers:"Поиск закончен; ожидаем завершения загрузок",finished:"Обработка завершена",cancelled:"Поиск прерван"};
 let timer=null;
 let activeBatchId=null;
 function parseSongs(){
@@ -102,7 +102,7 @@ function render(data){
   $("queued").textContent=data.queued??0;
   $("missing").textContent=data.not_found??0;
   $("activeSearches").textContent=data.active_searches??0;
-  $("caption").textContent=(phases[data.phase]||"Обновление статусов")+(data.retry_count?(" · повторный проход: "+data.retry_count+" трек(ов)"):"");
+  $("caption").textContent=(phases[data.phase]||"Обновление статусов")+(data.retry_count?(" · расширенный повтор: "+data.retry_count+" трек(ов)"):"");
   const done=(data.results||[]).filter(x=>["downloaded","not_found","failed","cancelled","error","slskd_error"].includes(x.status)).length;
   $("progress").style.width=(data.submitted?Math.round(done/data.submitted*100):0)+"%";
   $("rows").innerHTML=(data.results||[]).map(item=>{
@@ -112,7 +112,8 @@ function render(data){
     const pct=Math.max(0,Math.min(100,Number(item.percent||0)));
     let details=item.filename?esc(item.filename):esc(item.message||"");
     if(item.audio_format) details+=" <span class='pill'>"+esc(item.audio_format)+"</span>";
-    if(item.search_attempt>1) details+="<div class='muted'>Повторный поиск</div>";
+    if(item.search_attempt===2) details+="<div class='muted'>Контрольный последовательный поиск</div>";
+    if(item.search_attempt>=3) details+="<div class='muted'>Расширенный поиск</div>";
     if(["downloading","downloaded","paused"].includes(status)){
       details+="<div class='muted'>"+fmtBytes(item.bytes_transferred)+" / "+fmtBytes(item.size)+" · "+pct+"% · "+fmtBytes(item.speed||0)+"/s</div><div class='bar'><i style='width:"+pct+"%'></i></div>";
     }
@@ -154,7 +155,7 @@ $("submit").addEventListener("click",async()=>{
   if(!songs.length){$("error").textContent="Введите композиции в формате «Исполнитель — Название», по одной на строку.";return;}
   if(!Number.isInteger(searchDuration)||searchDuration<5||searchDuration>180){$("error").textContent="Длительность первого поиска должна быть от 5 до 180 секунд.";return;}
   if(!Number.isInteger(deepSearchDuration)||deepSearchDuration<10||deepSearchDuration>300){$("error").textContent="Длительность повторного поиска должна быть от 10 до 300 секунд.";return;}
-  if(!Number.isInteger(maxParallelSearches)||maxParallelSearches<1||maxParallelSearches>10){$("error").textContent="Число параллельных поисков должно быть от 1 до 10.";return;}
+  if(!Number.isInteger(maxParallelSearches)||maxParallelSearches<1||maxParallelSearches>2){$("error").textContent="Число параллельных поисков должно быть от 1 до 2 (ограничение slskd).";return;}
   $("submit").disabled=true;
   $("cancel").disabled=true;
   try{
@@ -195,7 +196,7 @@ fetch("/settings").then(r=>r.json()).then(settings=>{
   $("searchDuration").value=settings.search_duration_seconds??25;
   $("deepSearchDuration").value=settings.deep_search_duration_seconds??60;
   $("retryNotFound").checked=settings.retry_not_found??true;
-  $("maxParallelSearches").value=settings.max_parallel_searches??3;
+  $("maxParallelSearches").value=settings.max_parallel_searches??2;
 }).catch(()=>{});
 fetch("/health").then(r=>r.json()).then(()=>{$("health").textContent="Сервис доступен";}).catch(()=>$("health").textContent="Нет связи с API");
 </script>
