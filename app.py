@@ -819,7 +819,7 @@ async def lastfm_recommendations(request: LastFMRequest):
             label = f"Недельный чарт пользователя {request.username}"
             payload = await lastfm_call(
                 client, request.api_key, "user.getWeeklyTrackChart",
-                {"user": request.username, "limit": request.count},
+                {"user": request.username},
             )
             raw_items = lastfm_as_list((payload.get("weeklytrackchart") or {}).get("track"))
             items = [item for item in (lastfm_track_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
