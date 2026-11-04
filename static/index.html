@@ -23,10 +23,34 @@ details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cu
 .field{display:flex;flex-direction:column;gap:5px}.field label{font-size:13px;color:#c4ccda}.field input[type=number]{width:100%;background:#11151c;border:1px solid #394353;border-radius:8px;padding:9px;color:#edf2f7;font:inherit}
 .checkrow{display:flex;align-items:center;gap:9px;margin-top:14px;color:#c4ccda;font-size:13px}.checkrow input{width:16px;height:16px}
 @media(max-width:650px){body{padding:18px 10px}.card{padding:16px}.top{align-items:flex-start;flex-direction:column}.settings-grid{grid-template-columns:1fr}.row{align-items:flex-start;flex-direction:column}}
+
+.tabbar{display:flex;gap:8px;margin:0 0 16px;flex-wrap:wrap}
+.tab-button{background:#252d3a;color:#cbd4e2;border:1px solid #394353}
+.tab-button.active{background:#929fff;color:#111629;border-color:#929fff}
+.tab-panel[hidden],.mode-field[hidden]{display:none}
+input[type=text],input[type=password],.field select{width:100%;background:#11151c;border:1px solid #394353;border-radius:8px;padding:10px;color:#edf2f7;font:inherit}
+.field select{cursor:pointer}
+.lf-seeds{min-height:112px;resize:vertical}
+.key-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:end}
+.key-row .field{min-width:0}
+.lf-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
+.lf-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:16px}
+.lf-results-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:16px 0}
+.lf-result-table{min-width:550px}
+.track-check{width:18px;height:18px;accent-color:#929fff}
+.lf-meta{color:#9ba7b7;font-size:12px;margin-top:3px}
+@media(max-width:650px){.lf-grid{grid-template-columns:1fr}.key-row{grid-template-columns:1fr 1fr}.key-row .field{grid-column:1/-1}}
+
 </style>
 </head>
 <body><main>
 <header class="top"><div><h1>Song Queue</h1><div class="muted">Поиск MP3 / FLAC и очередь загрузок через slskd</div></div><div class="muted" id="health">Проверка сервиса…</div></header>
+
+<nav class="tabbar" role="tablist" aria-label="Разделы приложения">
+  <button class="tab-button active" type="button" data-tab="download" role="tab" aria-selected="true">Очередь загрузки</button>
+  <button class="tab-button" type="button" data-tab="lastfm" role="tab" aria-selected="false">Рекомендации Last.fm</button>
+</nav>
+<div id="tab-download" class="tab-panel">
 <section class="card">
   <h2>Список композиций</h2>
   <p class="muted">Один трек на строку: Исполнитель — Название. Другие форматы, включая LRC, игнорируются.</p>
@@ -75,6 +99,102 @@ details{border-top:1px solid #303846;padding-top:14px;margin-top:14px}summary{cu
   <div class="bar"><i id="progress" style="width:0"></i></div>
   <div class="wrap"><table><thead><tr><th>Композиция</th><th>Состояние</th><th>Файл / прогресс</th></tr></thead><tbody id="rows"></tbody></table></div>
 </section>
+
+</div>
+<div id="tab-lastfm" class="tab-panel" hidden>
+  <section class="card">
+    <h2>Подключение Last.fm</h2>
+    <p class="muted">Нужен API key из <a href="https://www.last.fm/api/account/create" target="_blank" rel="noopener">Last.fm API Account</a>. Ключ сохраняется только в локальном хранилище этого браузера и передаётся приложению при запросе. Для перечисленных методов авторизация пользователя Last.fm не требуется.</p>
+    <div class="key-row">
+      <div class="field">
+        <label for="lastfmApiKey">Last.fm API key</label>
+        <input id="lastfmApiKey" type="password" autocomplete="off" placeholder="Вставьте API key">
+      </div>
+      <button id="saveLastfmKey" type="button">Сохранить ключ</button>
+      <button id="clearLastfmKey" type="button" class="secondary">Забыть</button>
+    </div>
+    <div class="muted" id="lastfmKeyStatus">Ключ не сохранён</div>
+  </section>
+
+  <section class="card">
+    <h2>Тип списка</h2>
+    <div class="lf-grid">
+      <div class="field">
+        <label for="lastfmMode">Что получить из Last.fm</label>
+        <select id="lastfmMode">
+          <option value="similar_tracks">Похожие треки по одной или нескольким композициям</option>
+          <option value="artist_top_tracks">Самые популярные треки исполнителя</option>
+          <option value="similar_artists">Похожие исполнители</option>
+          <option value="tag_top_tracks">Популярные треки по тегу / жанру</option>
+          <option value="user_top_tracks">Топ треков пользователя Last.fm</option>
+          <option value="loved_tracks">Любимые треки пользователя</option>
+          <option value="weekly_track_chart">Недельный чарт пользователя</option>
+          <option value="global_chart">Глобальный чарт Last.fm</option>
+          <option value="country_chart">Чарт по стране</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="lastfmCount">Количество результатов</label>
+        <input id="lastfmCount" type="number" min="1" max="100" step="1" value="30">
+        <span class="muted">От 1 до 100. Для нескольких исходных треков лимит применяется к каждому.</span>
+      </div>
+      <div class="field mode-field" data-modes="similar_tracks">
+        <label for="lastfmSeeds">Исходные композиции</label>
+        <textarea class="lf-seeds" id="lastfmSeeds" placeholder="Massive Attack — Teardrop&#10;Portishead — Roads"></textarea>
+        <span class="muted">Одна строка на композицию, формат «Исполнитель — Название», максимум 10 строк.</span>
+      </div>
+      <div class="field mode-field" data-modes="artist_top_tracks,similar_artists">
+        <label for="lastfmArtist">Исполнитель</label>
+        <input id="lastfmArtist" type="text" placeholder="Например, Radiohead">
+      </div>
+      <div class="field mode-field" data-modes="tag_top_tracks">
+        <label for="lastfmTag">Тег / жанр</label>
+        <input id="lastfmTag" type="text" placeholder="Например, trip-hop, shoegaze, jazz">
+      </div>
+      <div class="field mode-field" data-modes="user_top_tracks,loved_tracks,weekly_track_chart">
+        <label for="lastfmUsername">Имя пользователя Last.fm</label>
+        <input id="lastfmUsername" type="text" placeholder="Например, rj">
+      </div>
+      <div class="field mode-field" data-modes="user_top_tracks">
+        <label for="lastfmPeriod">Период статистики</label>
+        <select id="lastfmPeriod">
+          <option value="overall">За всё время</option>
+          <option value="12month">12 месяцев</option>
+          <option value="6month">6 месяцев</option>
+          <option value="3month">3 месяца</option>
+          <option value="1month">1 месяц</option>
+          <option value="7day">7 дней</option>
+        </select>
+      </div>
+      <div class="field mode-field" data-modes="country_chart">
+        <label for="lastfmCountry">Страна (название на английском)</label>
+        <input id="lastfmCountry" type="text" value="Netherlands" placeholder="Например, Germany">
+      </div>
+    </div>
+    <div class="lf-actions">
+      <button id="getLastfm" type="button">Получить список →</button>
+      <span class="muted" id="lastfmStatus">Выберите тип списка и заполните параметры.</span>
+    </div>
+    <div class="error" id="lastfmError"></div>
+  </section>
+
+  <section class="card" id="lastfmResults" hidden>
+    <div class="lf-results-head">
+      <div>
+        <h2 id="lastfmResultTitle">Результаты Last.fm</h2>
+        <div class="muted" id="lastfmResultCount"></div>
+      </div>
+      <button id="addLastfmTracks" type="button" class="secondary">Добавить выбранные в очередь загрузки</button>
+    </div>
+    <div class="wrap">
+      <table class="lf-result-table">
+        <thead><tr><th>В очередь</th><th>#</th><th>Результат</th><th>Данные Last.fm</th></tr></thead>
+        <tbody id="lastfmRows"></tbody>
+      </table>
+    </div>
+    <p class="muted">Рекомендации и списки формирует Last.fm. Выбранные треки будут добавлены в первую вкладку, где можно проверить список и запустить поиск MP3 / FLAC через slskd.</p>
+  </section>
+</div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -192,6 +312,145 @@ $("cancel").addEventListener("click",async()=>{
     $("cancel").textContent="Прервать";
   }
 });
+
+const lastfmModeFields=Array.from(document.querySelectorAll(".mode-field"));
+function updateLastfmFields(){
+  const mode=$("lastfmMode").value;
+  lastfmModeFields.forEach(el=>{
+    el.hidden=!el.dataset.modes.split(",").includes(mode);
+  });
+}
+$("lastfmMode").addEventListener("change",updateLastfmFields);
+updateLastfmFields();
+
+function activateTab(name){
+  ["download","lastfm"].forEach(tab=>{
+    $("tab-"+tab).hidden=tab!==name;
+    const button=document.querySelector('[data-tab="'+tab+'"]');
+    button.classList.toggle("active",tab===name);
+    button.setAttribute("aria-selected",tab===name?"true":"false");
+  });
+}
+document.querySelectorAll("[data-tab]").forEach(button=>{
+  button.addEventListener("click",()=>activateTab(button.dataset.tab));
+});
+
+let lastfmItems=[];
+let lastfmKind="track";
+function setLastfmKeyStatus(message){$("lastfmKeyStatus").textContent=message;}
+try{
+  const storedKey=localStorage.getItem("lastfm_api_key")||"";
+  $("lastfmApiKey").value=storedKey;
+  setLastfmKeyStatus(storedKey?"Ключ сохранён в этом браузере":"Ключ не сохранён");
+}catch(err){setLastfmKeyStatus("Хранение ключа браузером недоступно; можно ввести его перед запросом.");}
+
+$("saveLastfmKey").addEventListener("click",()=>{
+  const key=$("lastfmApiKey").value.trim();
+  if(!key){setLastfmKeyStatus("Введите API key.");return;}
+  try{localStorage.setItem("lastfm_api_key",key);setLastfmKeyStatus("Ключ сохранён в этом браузере.");}
+  catch(err){setLastfmKeyStatus("Не удалось сохранить ключ; он останется в поле до закрытия страницы.");}
+});
+$("clearLastfmKey").addEventListener("click",()=>{
+  $("lastfmApiKey").value="";
+  try{localStorage.removeItem("lastfm_api_key");}catch(err){}
+  setLastfmKeyStatus("Ключ удалён из локального хранилища браузера.");
+});
+
+function parseLastfmSeeds(){
+  return $("lastfmSeeds").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{
+    let parts=line.split(/\s+[—–-]\s+/);
+    if(parts.length<2)parts=line.split(/\s+\/\s+/);
+    if(parts.length<2)return null;
+    return {artist:parts.shift().trim(),title:parts.join(" - ").trim()};
+  }).filter(x=>x&&x.artist&&x.title);
+}
+function lastfmMeta(item){
+  const bits=[];
+  if(item.match!==undefined&&item.match!==null&&item.match!=="")bits.push("Сходство: "+esc(item.match));
+  if(item.playcount!==undefined&&item.playcount!==null)bits.push("Прослушиваний: "+esc(item.playcount));
+  if(item.listeners!==undefined&&item.listeners!==null)bits.push("Слушателей: "+esc(item.listeners));
+  return bits.join(" · ")||"";
+}
+function renderLastfmResults(data){
+  lastfmItems=data.items||[];
+  lastfmKind=data.kind||"track";
+  $("lastfmResults").hidden=false;
+  $("lastfmResultTitle").textContent=data.label||"Результаты Last.fm";
+  $("lastfmResultCount").textContent=lastfmItems.length+" результатов";
+  $("lastfmRows").innerHTML=lastfmItems.map((item,index)=>{
+    const name=item.kind==="artist"?(item.name||""):(item.artist||"")+" — "+(item.title||"");
+    const meta=lastfmMeta(item);
+    const selectable=item.kind==="track"&&item.artist&&item.title;
+    return "<tr><td>"+(selectable?"<input class='track-check' type='checkbox' data-index='"+index+"' checked aria-label='Выбрать трек'>":"—")+"</td><td>"+(index+1)+"</td><td>"+esc(name)+"</td><td><div class='lf-meta'>"+meta+"</div></td></tr>";
+  }).join("");
+  $("addLastfmTracks").hidden=lastfmKind!=="track"||!lastfmItems.some(x=>x.kind==="track");
+}
+$("getLastfm").addEventListener("click",async()=>{
+  $("lastfmError").textContent="";
+  $("lastfmStatus").textContent="";
+  const apiKey=$("lastfmApiKey").value.trim();
+  const mode=$("lastfmMode").value;
+  const count=Number($("lastfmCount").value);
+  if(!apiKey){$("lastfmError").textContent="Введите API key Last.fm.";return;}
+  if(!Number.isInteger(count)||count<1||count>100){$("lastfmError").textContent="Количество результатов должно быть от 1 до 100.";return;}
+  const payload={api_key:apiKey,mode,count};
+  if(mode==="similar_tracks"){
+    payload.seed_tracks=parseLastfmSeeds();
+    if(!payload.seed_tracks.length){$("lastfmError").textContent="Введите хотя бы одну композицию в формате «Исполнитель — Название».";return;}
+    if(payload.seed_tracks.length>10){$("lastfmError").textContent="За один запрос можно указать не более 10 исходных композиций.";return;}
+  }
+  if(["artist_top_tracks","similar_artists"].includes(mode)){
+    payload.artist=$("lastfmArtist").value.trim();
+    if(!payload.artist){$("lastfmError").textContent="Укажите исполнителя.";return;}
+  }
+  if(mode==="tag_top_tracks"){
+    payload.tag=$("lastfmTag").value.trim();
+    if(!payload.tag){$("lastfmError").textContent="Укажите тег или жанр.";return;}
+  }
+  if(["user_top_tracks","loved_tracks","weekly_track_chart"].includes(mode)){
+    payload.username=$("lastfmUsername").value.trim();
+    if(!payload.username){$("lastfmError").textContent="Укажите имя пользователя Last.fm.";return;}
+  }
+  if(mode==="user_top_tracks")payload.period=$("lastfmPeriod").value;
+  if(mode==="country_chart"){
+    payload.country=$("lastfmCountry").value.trim();
+    if(!payload.country){$("lastfmError").textContent="Укажите страну на английском языке.";return;}
+  }
+  $("getLastfm").disabled=true;
+  $("lastfmStatus").textContent="Запрашиваем Last.fm…";
+  try{
+    const response=await fetch("/lastfm/recommendations",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    const data=await response.json();
+    if(!response.ok)throw new Error(data.detail||("HTTP "+response.status));
+    renderLastfmResults(data);
+    $("lastfmStatus").textContent="Готово.";
+  }catch(err){
+    $("lastfmError").textContent=typeof err.message==="string"?err.message:"Не удалось получить список Last.fm.";
+    $("lastfmStatus").textContent="";
+  }finally{$("getLastfm").disabled=false;}
+});
+$("addLastfmTracks").addEventListener("click",()=>{
+  const checked=Array.from($("lastfmRows").querySelectorAll("input.track-check:checked"));
+  const selected=checked.map(el=>lastfmItems[Number(el.dataset.index)]).filter(x=>x&&x.kind==="track"&&x.artist&&x.title);
+  if(!selected.length){$("lastfmStatus").textContent="Сначала выберите хотя бы один трек.";return;}
+  const existingText=$("songs").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  const normalizeLine=value=>value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu," ").trim().replace(/\s+/g," ");
+  const seen=new Set(parseSongs().map(x=>normalizeLine(x.artist+" "+x.title)));
+  let added=0;
+  for(const item of selected){
+    const line=item.artist+" — "+item.title;
+    const key=normalizeLine(item.artist+" "+item.title);
+    if(seen.has(key))continue;
+    existingText.push(line);seen.add(key);added++;
+  }
+  $("songs").value=existingText.join("\n");
+  $("songs").dispatchEvent(new Event("input",{bubbles:true}));
+  activateTab("download");
+  $("error").textContent="";
+  $("lastfmStatus").textContent=added+" новых трек(ов) добавлено в список загрузки.";
+  $("songs").focus();
+});
+
 fetch("/settings").then(r=>r.json()).then(settings=>{
   $("searchDuration").value=settings.search_duration_seconds??25;
   $("deepSearchDuration").value=settings.deep_search_duration_seconds??60;
