@@ -747,7 +747,7 @@ async def lastfm_recommendations(request: LastFMRequest):
     ) as client:
         if mode == "similar_tracks":
             label = "Треки, похожие на выбранные композиции"
-            for seed in request.seed_tracks:
+            for seed_index, seed in enumerate(request.seed_tracks):
                 payload = await lastfm_call(
                     client,
                     request.api_key,
@@ -762,13 +762,13 @@ async def lastfm_recommendations(request: LastFMRequest):
                 container = payload.get("similartracks") or {}
                 items.extend(
                     item for item in (
-                        lastfm_track_item(raw, len(items) + i + 1)
+                        lastfm_track_item(raw, i + 1)
                         for i, raw in enumerate(lastfm_as_list(container.get("track")))
                     ) if item
                 )
                 # Keep multi-seed requests comfortably below Last.fm's request-rate limits.
-                if seed is not request.seed_tracks[-1]:
-                    await asyncio.sleep(0.25)
+                if seed_index + 1 < len(request.seed_tracks):
+                    await asyncio.sleep(1.0)
 
         elif mode == "artist_top_tracks":
             label = f"Популярные треки: {request.artist}"
