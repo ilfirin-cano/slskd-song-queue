@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import uuid
+from typing import Literal
 from difflib import SequenceMatcher
 from urllib.parse import quote
 
@@ -40,7 +41,7 @@ SLSKD_POST_LOCK = asyncio.Lock()
 LAST_SLSKD_POST_AT = 0.0
 ALLOWED_EXTENSIONS = {".mp3", ".flac"}
 
-app = FastAPI(title="slskd Song Queue", version="2.2.0")
+app = FastAPI(title="slskd Song Queue", version="2.3.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 BATCHES = {}
 
@@ -60,6 +61,28 @@ class SongList(BaseModel):
     retry_not_found: bool = Field(default=RETRY_NOT_FOUND_BY_DEFAULT)
     deep_search_duration_seconds: int = Field(default=DEEP_SEARCH_DURATION_SECONDS, ge=10, le=300)
     max_parallel_searches: int = Field(default=DEFAULT_MAX_PARALLEL_SEARCHES, ge=1, le=2)
+
+
+class LastFMRequest(BaseModel):
+    api_key: str = Field(min_length=8, max_length=128)
+    mode: Literal[
+        "similar_tracks",
+        "artist_top_tracks",
+        "similar_artists",
+        "tag_top_tracks",
+        "user_top_tracks",
+        "loved_tracks",
+        "weekly_track_chart",
+        "global_chart",
+        "country_chart",
+    ]
+    seed_tracks: list[Song] = Field(default_factory=list, max_length=10)
+    artist: str | None = Field(default=None, max_length=200)
+    tag: str | None = Field(default=None, max_length=100)
+    username: str | None = Field(default=None, max_length=100)
+    country: str | None = Field(default=None, max_length=80)
+    period: Literal["overall", "7day", "1month", "3month", "6month", "12month"] = "overall"
+    count: int = Field(default=30, ge=1, le=100)
 
 
 @app.get("/", include_in_schema=False)
@@ -616,6 +639,227 @@ async def run_batch(batch_id):
         batch["phase"] = "cancelled" if batch["cancel_event"].is_set() else "finished"
         for item in batch["results"]:
             item.pop("song_obj", None)
+
+
+def lastfm_as_list(value):
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def lastfm_artist_name(value):
+    if isinstance(value, dict):
+        return str(value.get("name") or value.get("#text") or "").strip()
+    return str(value or "").strip()
+
+
+def lastfm_track_item(raw, rank):
+    if not isinstance(raw, dict):
+        return None
+    artist = lastfm_artist_name(raw.get("artist"))
+    title = str(raw.get("name") or raw.get("title") or "").strip()
+    if not artist or not title:
+        return None
+    return {
+        "kind": "track",
+        "artist": artist,
+        "title": title,
+        "rank": rank,
+        "match": raw.get("match"),
+        "playcount": raw.get("playcount"),
+        "listeners": raw.get("listeners"),
+        "url": raw.get("url"),
+    }
+
+
+def lastfm_artist_item(raw, rank):
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name") or "").strip()
+    if not name:
+        return None
+    return {
+        "kind": "artist",
+        "name": name,
+        "rank": rank,
+        "match": raw.get("match"),
+        "playcount": raw.get("playcount"),
+        "listeners": raw.get("listeners"),
+        "url": raw.get("url"),
+    }
+
+
+async def lastfm_call(client, api_key: str, method: str, params: dict):
+    query = {
+        "method": method,
+        "api_key": api_key,
+        "format": "json",
+        **params,
+    }
+    try:
+        response = await client.get("/2.0/", params=query)
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Last.fm вернул HTTP {exc.response.status_code}",
+        ) from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Не удалось получить ответ Last.fm: {str(exc)[:200]}",
+        ) from exc
+
+    if isinstance(payload, dict) and payload.get("error") is not None:
+        error_code = payload.get("error")
+        error_message = payload.get("message") or "Unknown Last.fm API error"
+        raise HTTPException(
+            status_code=502,
+            detail=f"Last.fm API {error_code}: {error_message}",
+        )
+    return payload if isinstance(payload, dict) else {}
+
+
+@app.post("/lastfm/recommendations")
+async def lastfm_recommendations(request: LastFMRequest):
+    mode = request.mode
+    if mode == "similar_tracks" and not request.seed_tracks:
+        raise HTTPException(
+            status_code=422,
+            detail="Для поиска похожих треков добавьте хотя бы одну строку «Исполнитель — Название».",
+        )
+    if mode in {"artist_top_tracks", "similar_artists"} and not request.artist:
+        raise HTTPException(status_code=422, detail="Укажите исполнителя.")
+    if mode == "tag_top_tracks" and not request.tag:
+        raise HTTPException(status_code=422, detail="Укажите музыкальный тег.")
+    if mode in {"user_top_tracks", "loved_tracks", "weekly_track_chart"} and not request.username:
+        raise HTTPException(status_code=422, detail="Укажите имя пользователя Last.fm.")
+    if mode == "country_chart" and not request.country:
+        raise HTTPException(status_code=422, detail="Укажите страну на английском языке.")
+
+    items = []
+    label = ""
+    async with httpx.AsyncClient(
+        base_url="https://ws.audioscrobbler.com",
+        headers={"User-Agent": "slskd-song-queue/2.3.0"},
+        timeout=25,
+    ) as client:
+        if mode == "similar_tracks":
+            label = "Треки, похожие на выбранные композиции"
+            for seed in request.seed_tracks:
+                payload = await lastfm_call(
+                    client,
+                    request.api_key,
+                    "track.getSimilar",
+                    {
+                        "artist": seed.artist,
+                        "track": seed.title,
+                        "autocorrect": 1,
+                        "limit": min(request.count, 100),
+                    },
+                )
+                container = payload.get("similartracks") or {}
+                items.extend(
+                    item for item in (
+                        lastfm_track_item(raw, len(items) + i + 1)
+                        for i, raw in enumerate(lastfm_as_list(container.get("track")))
+                    ) if item
+                )
+                # Keep multi-seed requests comfortably below Last.fm's request-rate limits.
+                if seed is not request.seed_tracks[-1]:
+                    await asyncio.sleep(0.25)
+
+        elif mode == "artist_top_tracks":
+            label = f"Популярные треки: {request.artist}"
+            payload = await lastfm_call(
+                client, request.api_key, "artist.getTopTracks",
+                {"artist": request.artist, "autocorrect": 1, "limit": request.count},
+            )
+            raw_items = lastfm_as_list((payload.get("toptracks") or {}).get("track"))
+            items = [item for item in (lastfm_track_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
+
+        elif mode == "similar_artists":
+            label = f"Исполнители, похожие на {request.artist}"
+            payload = await lastfm_call(
+                client, request.api_key, "artist.getSimilar",
+                {"artist": request.artist, "autocorrect": 1, "limit": request.count},
+            )
+            raw_items = lastfm_as_list((payload.get("similarartists") or {}).get("artist"))
+            items = [item for item in (lastfm_artist_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
+
+        elif mode == "tag_top_tracks":
+            label = f"Популярное по тегу: {request.tag}"
+            payload = await lastfm_call(
+                client, request.api_key, "tag.getTopTracks",
+                {"tag": request.tag, "limit": request.count},
+            )
+            raw_items = lastfm_as_list((payload.get("tracks") or {}).get("track"))
+            items = [item for item in (lastfm_track_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
+
+        elif mode == "user_top_tracks":
+            label = f"Топ треков пользователя {request.username}"
+            payload = await lastfm_call(
+                client, request.api_key, "user.getTopTracks",
+                {"user": request.username, "period": request.period, "limit": request.count},
+            )
+            raw_items = lastfm_as_list((payload.get("toptracks") or {}).get("track"))
+            items = [item for item in (lastfm_track_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
+
+        elif mode == "loved_tracks":
+            label = f"Любимые треки пользователя {request.username}"
+            payload = await lastfm_call(
+                client, request.api_key, "user.getLovedTracks",
+                {"user": request.username, "limit": request.count},
+            )
+            raw_items = lastfm_as_list((payload.get("lovedtracks") or {}).get("track"))
+            items = [item for item in (lastfm_track_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
+
+        elif mode == "weekly_track_chart":
+            label = f"Недельный чарт пользователя {request.username}"
+            payload = await lastfm_call(
+                client, request.api_key, "user.getWeeklyTrackChart",
+                {"user": request.username, "limit": request.count},
+            )
+            raw_items = lastfm_as_list((payload.get("weeklytrackchart") or {}).get("track"))
+            items = [item for item in (lastfm_track_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
+
+        elif mode == "global_chart":
+            label = "Глобальный чарт Last.fm"
+            payload = await lastfm_call(
+                client, request.api_key, "chart.getTopTracks", {"limit": request.count},
+            )
+            raw_items = lastfm_as_list((payload.get("tracks") or {}).get("track"))
+            items = [item for item in (lastfm_track_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
+
+        else:  # country_chart
+            label = f"Чарт Last.fm: {request.country}"
+            payload = await lastfm_call(
+                client, request.api_key, "geo.getTopTracks",
+                {"country": request.country, "limit": request.count},
+            )
+            raw_items = lastfm_as_list((payload.get("tracks") or {}).get("track"))
+            items = [item for item in (lastfm_track_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
+
+    # A track can be returned for multiple seed songs. Keep its first appearance.
+    unique = []
+    seen = set()
+    for item in items:
+        key = (normalize(item.get("artist") or item.get("name") or ""),
+               normalize(item.get("title") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        item["rank"] = len(unique) + 1
+        unique.append(item)
+
+    return {
+        "mode": mode,
+        "label": label,
+        "kind": "artist" if mode == "similar_artists" else "track",
+        "count": len(unique),
+        "items": unique[:request.count * (len(request.seed_tracks) if mode == "similar_tracks" else 1)],
+    }
 
 
 @app.get("/health")
