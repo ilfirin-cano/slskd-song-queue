@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 SLSKD_URL = os.getenv("SLSKD_URL", "http://slskd:5030").rstrip("/")
 API_KEY = os.getenv("SLSKD_API_KEY", "")
+LASTFM_PROXY = os.getenv("LASTFM_PROXY", "").strip() or None
 
 LEGACY_SEARCH_TIMEOUT_MS = int(os.getenv("SEARCH_TIMEOUT_MS", "25000"))
 SEARCH_DURATION_SECONDS = int(os.getenv(
@@ -742,6 +743,7 @@ async def lastfm_recommendations(request: LastFMRequest):
     label = ""
     async with httpx.AsyncClient(
         base_url="https://ws.audioscrobbler.com",
+        proxy=LASTFM_PROXY,
         headers={"User-Agent": "slskd-song-queue/2.3.0"},
         timeout=25,
     ) as client:
