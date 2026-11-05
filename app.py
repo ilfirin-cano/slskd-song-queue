@@ -920,7 +920,7 @@ async def lastfm_recommendations(request: LastFMRequest):
                 {"user": request.username, "period": request.period, "limit": request.count},
             )
             raw_items = lastfm_as_list((payload.get("topartists") or {}).get("artist"))
-            items = [item for item in (lastfm_artist_item(raw, i + 1) for raw in raw_items) if item]
+            items = [item for item in (lastfm_artist_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
 
         elif mode == "user_top_albums":
             label = f"Топ альбомов пользователя {request.username}"
@@ -930,7 +930,7 @@ async def lastfm_recommendations(request: LastFMRequest):
                 {"user": request.username, "period": request.period, "limit": request.count},
             )
             raw_items = lastfm_as_list((payload.get("topalbums") or {}).get("album"))
-            items = [item for item in (lastfm_album_item(raw, i + 1) for raw in raw_items) if item]
+            items = [item for item in (lastfm_album_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
 
         elif mode == "user_top_tags":
             label = f"Топ тегов пользователя {request.username}"
@@ -940,7 +940,7 @@ async def lastfm_recommendations(request: LastFMRequest):
                 {"user": request.username, "limit": request.count},
             )
             raw_items = lastfm_as_list((payload.get("toptags") or {}).get("tag"))
-            items = [item for item in (lastfm_tag_item(raw, i + 1) for raw in raw_items) if item]
+            items = [item for item in (lastfm_tag_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
 
         elif mode == "global_top_artists":
             label = "Глобальный чарт исполнителей"
@@ -949,7 +949,7 @@ async def lastfm_recommendations(request: LastFMRequest):
                 client, request.api_key, "chart.getTopArtists", {"limit": request.count},
             )
             raw_items = lastfm_as_list((payload.get("artists") or {}).get("artist"))
-            items = [item for item in (lastfm_artist_item(raw, i + 1) for raw in raw_items) if item]
+            items = [item for item in (lastfm_artist_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
 
         elif mode == "global_top_tags":
             label = "Глобальный чарт тегов"
@@ -958,7 +958,7 @@ async def lastfm_recommendations(request: LastFMRequest):
                 client, request.api_key, "chart.getTopTags", {"limit": request.count},
             )
             raw_items = lastfm_as_list((payload.get("toptags") or payload.get("tags") or {}).get("tag"))
-            items = [item for item in (lastfm_tag_item(raw, i + 1) for raw in raw_items) if item]
+            items = [item for item in (lastfm_tag_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
 
         elif mode == "country_top_artists":
             label = f"Популярные исполнители: {request.country}"
@@ -968,7 +968,7 @@ async def lastfm_recommendations(request: LastFMRequest):
                 {"country": request.country, "limit": request.count},
             )
             raw_items = lastfm_as_list((payload.get("topartists") or {}).get("artist"))
-            items = [item for item in (lastfm_artist_item(raw, i + 1) for raw in raw_items) if item]
+            items = [item for item in (lastfm_artist_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
 
         elif mode == "tag_top_artists":
             label = f"Исполнители по тегу: {request.tag}"
@@ -978,7 +978,7 @@ async def lastfm_recommendations(request: LastFMRequest):
                 {"tag": request.tag, "limit": request.count},
             )
             raw_items = lastfm_as_list((payload.get("topartists") or {}).get("artist"))
-            items = [item for item in (lastfm_artist_item(raw, i + 1) for raw in raw_items) if item]
+            items = [item for item in (lastfm_artist_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
 
         elif mode == "tag_top_albums":
             label = f"Альбомы по тегу: {request.tag}"
@@ -988,7 +988,7 @@ async def lastfm_recommendations(request: LastFMRequest):
                 {"tag": request.tag, "limit": request.count},
             )
             raw_items = lastfm_as_list((payload.get("albums") or {}).get("album"))
-            items = [item for item in (lastfm_album_item(raw, i + 1) for raw in raw_items) if item]
+            items = [item for item in (lastfm_album_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
 
         elif mode == "artist_top_albums":
             label = f"Популярные альбомы: {request.artist}"
@@ -998,7 +998,7 @@ async def lastfm_recommendations(request: LastFMRequest):
                 {"artist": request.artist, "autocorrect": 1, "limit": request.count},
             )
             raw_items = lastfm_as_list((payload.get("topalbums") or {}).get("album"))
-            items = [item for item in (lastfm_album_item(raw, i + 1) for raw in raw_items) if item]
+            items = [item for item in (lastfm_album_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
 
         elif mode == "album_tracks":
             label = f"Трек-лист альбома: {request.artist} — {request.album}"
@@ -1055,7 +1055,7 @@ async def lastfm_recommendations(request: LastFMRequest):
                 {"tag": request.tag},
             )
             raw_items = lastfm_as_list((payload.get("similartags") or {}).get("tag"))
-            items = [item for item in (lastfm_tag_item(raw, i + 1) for raw in raw_items) if item]
+            items = [item for item in (lastfm_tag_item(raw, i + 1) for i, raw in enumerate(raw_items)) if item]
 
     unique = []
     seen = set()
