@@ -58,8 +58,8 @@ input[type=text],input[type=password],.field select{width:100%;background:#11151
   <div class="settings-grid">
     <div class="field">
       <label for="maxParallelSearches">Одновременно активных поисков</label>
-      <input id="maxParallelSearches" type="number" min="1" max="2" step="1" value="2">
-      <span class="muted">Максимум 2 активных поиска. Старт каждого следующего — не раньше чем через секунду.</span>
+      <input id="maxParallelSearches" type="number" min="1" max="20" step="1" value="5">
+      <span class="muted">Можно задать от 1 до 20 активных поисков. Старт запросов дозируется с интервалом не менее секунды.</span>
     </div>
   </div>
   <details>
@@ -236,7 +236,7 @@ function render(data){
   $("total").textContent=data.submitted;
   $("queued").textContent=data.queued??0;
   $("missing").textContent=data.not_found??0;
-  $("activeSearches").textContent=(data.active_searches??0)+" / "+(data.settings?.max_parallel_searches??2);
+  $("activeSearches").textContent=(data.active_searches??0)+" / "+(data.settings?.max_parallel_searches??5);
   $("caption").textContent=(phases[data.phase]||"Обновление статусов")+(data.retry_count?(" · расширенный повтор: "+data.retry_count+" трек(ов)"):"");
   const done=(data.results||[]).filter(x=>["downloaded","not_found","failed","cancelled","error","slskd_error"].includes(x.status)).length;
   $("progress").style.width=(data.submitted?Math.round(done/data.submitted*100):0)+"%";
@@ -290,7 +290,7 @@ $("submit").addEventListener("click",async()=>{
   if(!songs.length){$("error").textContent="Введите композиции в формате «Исполнитель — Название», по одной на строку.";return;}
   if(!Number.isInteger(searchDuration)||searchDuration<5||searchDuration>180){$("error").textContent="Длительность первого поиска должна быть от 5 до 180 секунд.";return;}
   if(!Number.isInteger(deepSearchDuration)||deepSearchDuration<10||deepSearchDuration>300){$("error").textContent="Длительность повторного поиска должна быть от 10 до 300 секунд.";return;}
-  if(!Number.isInteger(maxParallelSearches)||maxParallelSearches<1||maxParallelSearches>2){$("error").textContent="Число параллельных поисков должно быть от 1 до 2 (ограничение slskd).";return;}
+  if(!Number.isInteger(maxParallelSearches)||maxParallelSearches<1||maxParallelSearches>20){$("error").textContent="Число параллельных поисков должно быть от 1 до 20.";return;}
   $("submit").disabled=true;
   $("cancel").disabled=true;
   try{
@@ -512,7 +512,7 @@ fetch("/settings").then(r=>r.json()).then(settings=>{
   $("searchDuration").value=settings.search_duration_seconds??25;
   $("deepSearchDuration").value=settings.deep_search_duration_seconds??60;
   $("retryNotFound").checked=settings.retry_not_found??true;
-  $("maxParallelSearches").value=settings.max_parallel_searches??2;
+  $("maxParallelSearches").value=settings.max_parallel_searches??5;
 }).catch(()=>{});
 fetch("/health").then(r=>r.json()).then(()=>{$("health").textContent="Сервис доступен";}).catch(()=>$("health").textContent="Нет связи с API");
 </script>
