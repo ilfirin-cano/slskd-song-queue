@@ -429,7 +429,12 @@ async def process_song(
             if serial_retry else f"Первичный поиск ({duration} сек.)"
         )
 
-    update_item(batch_id, index, status="searching", search_attempt=attempt, message=status_message)
+    update_item(
+        batch_id, index,
+        status="pending",
+        search_attempt=attempt,
+        message="Ожидает свободного слота поиска",
+    )
 
     try:
         # Parallel mode is capped at two (the slskd client-side limit).
@@ -442,6 +447,13 @@ async def process_song(
         async with semaphore:
             if cancel_event.is_set():
                 raise BatchCancelled()
+
+            update_item(
+                batch_id, index,
+                status="searching",
+                search_attempt=attempt,
+                message=status_message,
+            )
 
             async with httpx.AsyncClient(
                 base_url=SLSKD_URL,
@@ -744,9 +756,20 @@ async def lastfm_call(client, api_key: str, method: str, params: dict):
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPStatusError as exc:
+        response_body = exc.response.text.strip()
+        try:
+            error_payload = exc.response.json()
+            if isinstance(error_payload, dict) and error_payload.get("error") is not None:
+                response_body = (
+                    f"API {error_payload.get('error')}: "
+                    f"{error_payload.get('message') or 'ошибка API'}"
+                )
+        except ValueError:
+            pass
+        diagnostic = f": {response_body[:400]}" if response_body else ""
         raise HTTPException(
             status_code=502,
-            detail=f"Last.fm вернул HTTP {exc.response.status_code}",
+            detail=f"Last.fm вернул HTTP {exc.response.status_code}{diagnostic}",
         ) from exc
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(
@@ -1006,48 +1029,18 @@ async def lastfm_auth_disconnect():
 @app.post("/lastfm/recommendations")
 async def lastfm_recommendations(request: LastFMRequest):
     credentials = LASTFM_CREDENTIALS
-    if not credentials.get("api_key") or not credentials.get("session_key"):
-        raise HTTPException(
-            status_code=401,
-            detail="Сначала подключите аккаунт Last.fm через API key и shared secret.",
-        )
-    username = credentials["username"]
-    api_key = credentials["api_key"]
-    bucket = {}
-    label = ""
+    if no        if request.mode in {"personal_recommended_tracks", "history_mix"}:
+            personal_recommendations = request.mode == "personal_recommended_tracks"
+            if personal_recommendations:
+                label = f"Персональные рекомендации на основе прослушиваний {username}"
+                history_basis = "top"
+                history_period = "3month"
+            else:
+                label = f"Рекомендации на основе прослушиваний {username}"
+                history_basis = request.history_basis
+                history_period = request.period
 
-    async with httpx.AsyncClient(
-        base_url="https://ws.audioscrobbler.com",
-        headers={"User-Agent": "slskd-song-queue/2.6.0"},
-        timeout=25,
-    ) as client:
-        if request.mode == "personal_recommended_tracks":
-            label = f"Персональные рекомендации Last.fm для {username}"
-            payload = await lastfm_signed_call(
-                client, credentials, "user.getRecommendedArtists",
-                {"limit": min(max(request.count, 20), 100), "page": 1},
-            )
-            recommended = lastfm_as_list(
-                (payload.get("recommendedartists") or {}).get("artist")
-            )
-            if not recommended:
-                recommended = lastfm_as_list(
-                    (payload.get("artists") or {}).get("artist")
-                )
-            for artist in recommended[:min(12, max(5, request.count // 3))]:
-                artist_name = lastfm_artist_name(artist)
-                if not artist_name:
-                    continue
-                await add_artist_top_tracks(
-                    client, api_key, artist_name, bucket,
-                    source=f"Персональная рекомендация Last.fm: {artist_name}",
-                    weight=recommendation_match(artist.get("match", 0.5)),
-                    limit=4,
-                )
-
-        elif request.mode == "history_mix":
-            label = f"Рекомендации на основе прослушиваний {username}"
-            if request.history_basis == "recent":
+            if history_basis == "recent":
                 payload = await lastfm_public_call(
                     client, api_key, "user.getRecentTracks",
                     {"user": username, "limit": 100, "extended": 1},
@@ -1057,10 +1050,10 @@ async def lastfm_recommendations(request: LastFMRequest):
             else:
                 payload = await lastfm_public_call(
                     client, api_key, "user.getTopTracks",
-                    {"user": username, "period": request.period, "limit": 100},
+                    {"user": username, "period": history_period, "limit": 100},
                 )
                 raw_history = lastfm_as_list((payload.get("toptracks") or {}).get("track"))
-                seed_title = f"топа за {request.period}"
+                seed_title = f"топа за {history_period}"
 
             track_frequency = {}
             artist_frequency = {}
@@ -1156,6 +1149,20 @@ async def lastfm_recommendations(request: LastFMRequest):
             for similar_artist in sorted(
                 similar_artists.values(),
                 key=lambda item: item["match"],
+                reverse=True,
+            )[:6]:
+                await add_artist_top_tracks(
+                    client, api_key, similar_artist["name"], bucket,
+                    source=similar_artist["source"],
+                    weight=similar_artist["match"],
+                    limit=4,
+                )
+
+            for entry in bucket.values():
+                if (normalize(entry["artist"]), normalize(entry["title"])) in heard_keys:
+                    continue
+
+ key=lambda item: item["match"],
                 reverse=True,
             )[:6]:
                 await add_artist_top_tracks(
