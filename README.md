@@ -2,42 +2,84 @@
 
 Отдельный HTTP-сервис с веб-интерфейсом: принимает список композиций, ищет совпадения через API уже запущенного контейнера slskd и добавляет выбранные файлы в его очередь загрузок. Сам slskd в этот Docker Compose не входит и не устанавливается повторно.
 
-## Подключение к существующему slskd
+## Сетевая схема: весь трафик через Gluetun
 
-1. Убедитесь, что контейнер slskd запущен:
+`song-queue` использует `network_mode: "container:gluetun"`: его исходящий сетевой трафик идёт через сетевой namespace и VPN/firewall уже запущенного контейнера Gluetun. Сам Gluetun должен быть запущен до запуска этого Compose-проекта.
 
-   ~~~bash
-   docker ps
-   ~~~
+Поскольку `song-queue` разделяет сеть Gluetun, в его Compose-файле больше нет `ports:` и `networks:`. Публикация веб-порта и подключение к Docker-сети slskd настраиваются на сервисе Gluetun.
 
-2. Узнайте Docker-сеть, к которой подключён контейнер (здесь предполагается, что его имя — slskd):
+### 1. Узнать Docker-сеть slskd и её подсеть
 
-   ~~~bash
-   docker inspect slskd --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}'
-   ~~~
+Убедитесь, что контейнер slskd запущен, затем выполните:
 
-   Используйте имя одной из этих сетей в переменной SLSKD_NETWORK. Если контейнер называется иначе, укажите его DNS-имя или сетевой alias в SLSKD_URL.
+~~~bash
+docker inspect slskd --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}'
+~~~
 
-3. Создайте локальный файл настроек:
+Ниже предполагается имя сети `slskd_default`. Узнайте её подсеть (CIDR):
 
-   ~~~bash
-   cp .env.example .env
-   ~~~
+~~~bash
+docker network inspect slskd_default --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'
+~~~
 
-4. Отредактируйте .env:
-   - SLSKD_NETWORK — существующая Docker-сеть slskd, например slskd_default;
-   - SLSKD_URL — адрес API slskd внутри этой сети, обычно http://slskd:5030;
-   - SLSKD_API_KEY — API key из настроек Web/API slskd.
+Подставьте фактическое имя сети и подсеть в следующую конфигурацию Gluetun.
 
-5. Запустите только приложение:
+### 2. Изменить Compose-файл Gluetun
 
-   ~~~bash
-   docker compose up -d --build
-   ~~~
+В Compose-файле уже существующего Gluetun добавьте в сервис `gluetun` следующие параметры. Не заменяйте ими остальные настройки VPN; объедините `ports`, `environment` и `networks` с уже имеющимися секциями:
 
-6. Откройте веб-интерфейс: http://localhost:8080.
+~~~yaml
+services:
+  gluetun:
+    ports:
+      - "8081:8081/tcp"
+    environment:
+      # Разрешить входящие подключения к веб-интерфейсу на порту контейнера 8081
+      FIREWALL_INPUT_PORTS: "8081"
+      # Разрешить локальный доступ к slskd по его Docker-подсети.
+      # Замените пример на результат docker network inspect.
+      FIREWALL_OUTBOUND_SUBNETS: "172.20.0.0/16"
+    networks:
+      - default
+      - slskd
 
-Важно: внешний Docker network должен уже существовать. Compose этого проекта не создаёт, не перезапускает и не изменяет контейнер slskd.
+networks:
+  default: {}
+  slskd:
+    external: true
+    name: slskd_default
+~~~
+
+Если у Gluetun уже есть собственные сети, сохраните их и добавьте `slskd`; не дублируйте ключи YAML. Если `FIREWALL_INPUT_PORTS` или `FIREWALL_OUTBOUND_SUBNETS` уже заданы, допишите нужный порт/подсеть в существующую строку через запятую, не затирая прежние значения.
+
+`FIREWALL_OUTBOUND_SUBNETS` нужен для локального обращения через Docker-сеть к `slskd`; без этого строгий firewall Gluetun может заблокировать доступ к API slskd. Весь обычный внешний трафик `song-queue`, включая Last.fm, остаётся за VPN kill switch. См. [документацию Gluetun по сетевому namespace](https://github.com/qdm12/gluetun-wiki/blob/main/setup/connect-a-container-to-gluetun.md), [публикации портов](https://github.com/qdm12/gluetun-wiki/blob/main/setup/port-mapping.md) и [firewall](https://github.com/qdm12/gluetun-wiki/blob/main/setup/options/firewall.md).
+
+Пересоздайте/обновите Gluetun через его собственный каталог и Compose-файл. Gluetun должен быть запущен до `song-queue`.
+
+### 3. Настроить Song Queue
+
+Создайте или обновите локальный `.env`:
+
+~~~bash
+cp .env.example .env
+~~~
+
+Задайте `SLSKD_URL` (обычно `http://slskd:5030`) и `SLSKD_API_KEY`. `slskd` должен быть доступен по DNS-имени из Docker-сети, подключённой к Gluetun.
+
+Обновите и запустите приложение:
+
+~~~bash
+git pull
+docker compose up -d --build
+~~~
+
+Веб-интерфейс теперь доступен на порту **8081**: `http://localhost:8081` или `http://IP_СЕРВЕРА:8081`.
+
+Важно: если Gluetun будет пересоздан (получит новый container ID), пересоздайте и `song-queue`, чтобы он подключился к новому сетевому namespace:
+
+~~~bash
+docker compose up -d --build --force-recreate
+~~~
 
 ## Поиск и скачивание
 
@@ -65,7 +107,7 @@
 - топ треков пользователя за выбранный период (user.getTopTracks), любимые треки (user.getLovedTracks) и недельный трековый чарт (user.getWeeklyTrackChart);
 - глобальный чарт (chart.getTopTracks) и чарт по стране (geo.getTopTracks).
 
-Это набор методов каталога и чартов Last.fm, а не один универсальный рекомендательный алгоритм. Для запросов используется API key; отдельная авторизация пользователя Last.fm для этих read-only методов не нужна. API key хранится в localStorage браузера и передаётся серверу только вместе с запросом рекомендаций. Для проксирования только запросов Last.fm задайте `LASTFM_PROXY`, например `http://gluetun:8888`; API slskd остаётся на обычном сетевом маршруте. Вводить его в `.env` не требуется. Используйте интерфейс только в доверенной сети или через HTTPS: при обычном HTTP ключ передаётся без шифрования.
+Это набор методов каталога и чартов Last.fm, а не один универсальный рекомендательный алгоритм. Для запросов используется API key; отдельная авторизация пользователя Last.fm для этих read-only методов не нужна. API key хранится в localStorage браузера и передаётся серверу только вместе с запросом рекомендаций. Поскольку весь сетевой namespace приложения использует Gluetun, отдельная настройка HTTP-прокси для Last.fm не нужна. Используйте интерфейс только в доверенной сети или через HTTPS: при обычном HTTP ключ передаётся без шифрования.
 
 Списки треков можно выборочно перенести в первую вкладку. После переноса проверьте список и нажмите «Найти и скачать», чтобы запустить поиск MP3 / FLAC в slskd. Список похожих исполнителей показывается отдельно и напрямую в очередь треков не переносится.
 
@@ -82,7 +124,7 @@
 Пример отправки списка:
 
 ~~~bash
-curl -X POST http://localhost:8080/songs \
+curl -X POST http://localhost:8081/songs \
   -H 'Content-Type: application/json' \
   -d '{"songs":[{"artist":"Daft Punk","title":"Giorgio by Moroder"},{"artist":"Massive Attack","title":"Teardrop"}],"max_parallel_searches":2}'
 ~~~
@@ -97,21 +139,14 @@ curl -X POST http://localhost:8080/songs \
 | MAX_PARALLEL_SEARCHES | Число одновременно активных поисков (максимум 2) | 2 |
 | SEARCH_START_INTERVAL_SECONDS | Минимальный интервал между стартами API POST | 1 секунда |
 | SLSKD_429_RETRIES | Число повторов при HTTP 429 | 5 |
-| LASTFM_PROXY | HTTP(S)-proxy только для Last.fm, например http://gluetun:8888 | пусто (без proxy) |
 
 В настройках веб-интерфейса можно задать число параллельных поисков для конкретного списка. Интервал старта нельзя уменьшить ниже одной секунды.
 
-## Обновление
-
-~~~bash
-git pull
-docker compose up -d --build
-~~~
-
 ## Важные замечания
 
-- Сервис подключается к существующему slskd по внутренней Docker-сети; он не содержит отдельного экземпляра slskd.
+- Сервис подключается к существующему slskd через Docker-сеть, присоединённую к Gluetun; он не содержит отдельного экземпляра slskd.
+- Весь исходящий трафик `song-queue` разделяет VPN-маршрут и firewall Gluetun. Доступ к Docker-подсети slskd является отдельным локальным разрешением.
 - Состояние batch хранится в памяти процесса. После перезапуска song-queue история batch не восстанавливается, но сами трансферы продолжают управляться slskd.
 - Совместимость конкретных полей API зависит от версии slskd.
-- Не публикуйте порты приложения и slskd в интернет без аутентификации и сетевой защиты. Не добавляйте .env или API key в Git.
+- Не публикуйте веб-интерфейс в интернет без аутентификации и сетевой защиты. Не добавляйте `.env` или API key в Git.
 - Соблюдайте законодательство об авторском праве и правила Soulseek.
