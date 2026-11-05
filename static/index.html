@@ -93,7 +93,7 @@ input[type=text],input[type=password],.field select{width:100%;background:#11151
     <div class="metric"><span class="muted">Отправлено</span><strong id="total">0</strong></div>
     <div class="metric"><span class="muted">В очереди / скачивается / готово</span><strong id="queued">0</strong></div>
     <div class="metric"><span class="muted">Не найдено</span><strong id="missing">0</strong></div>
-    <div class="metric"><span class="muted">Активных поисков</span><strong id="activeSearches">0</strong></div>
+    <div class="metric"><span class="muted">Активных поисков / лимит</span><strong id="activeSearches">0 / 2</strong></div>
   </div>
   <p class="muted" id="caption">Обновление статусов автоматически</p>
   <div class="bar"><i id="progress" style="width:0"></i></div>
@@ -196,7 +196,7 @@ input[type=text],input[type=password],.field select{width:100%;background:#11151
 </main>
 <script>
 const $=id=>document.getElementById(id);
-const labels={pending:"Ожидает поиска",searching:"Поиск",adding:"Добавление",queued:"В очереди",connecting:"Подключение",downloading:"Скачивается",downloaded:"Скачан",not_found:"Не найден",paused:"Пауза",failed:"Ошибка загрузки",cancelled:"Прервано",slskd_error:"Ошибка slskd",error:"Ошибка",monitoring_timeout:"Нет обновлений"};
+const labels={pending:"Ожидает слота",searching:"Поиск",adding:"Добавление",queued:"В очереди",connecting:"Подключение",downloading:"Скачивается",downloaded:"Скачан",not_found:"Не найден",paused:"Пауза",failed:"Ошибка загрузки",cancelled:"Прервано",slskd_error:"Ошибка slskd",error:"Ошибка",monitoring_timeout:"Нет обновлений"};
 const phases={queued:"Ожидание запуска",initial_search:"Первичный поиск",serial_retry:"Перепроверка пустых результатов по одному",deep_search:"Повторный расширенный поиск ненайденных треков",cancelling:"Останавливаем активные поиски…",cancelled_waiting_for_transfers:"Поиск прерван; уже добавленные загрузки продолжаются",waiting_for_transfers:"Поиск закончен; ожидаем завершения загрузок",finished:"Обработка завершена",cancelled:"Поиск прерван"};
 let timer=null;
 let activeBatchId=null;
@@ -236,7 +236,7 @@ function render(data){
   $("total").textContent=data.submitted;
   $("queued").textContent=data.queued??0;
   $("missing").textContent=data.not_found??0;
-  $("activeSearches").textContent=data.active_searches??0;
+  $("activeSearches").textContent=(data.active_searches??0)+" / "+(data.settings?.max_parallel_searches??2);
   $("caption").textContent=(phases[data.phase]||"Обновление статусов")+(data.retry_count?(" · расширенный повтор: "+data.retry_count+" трек(ов)"):"");
   const done=(data.results||[]).filter(x=>["downloaded","not_found","failed","cancelled","error","slskd_error"].includes(x.status)).length;
   $("progress").style.width=(data.submitted?Math.round(done/data.submitted*100):0)+"%";
