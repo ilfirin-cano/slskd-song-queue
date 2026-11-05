@@ -27,7 +27,8 @@ SEARCH_WAIT_GRACE_SECONDS = int(os.getenv("SEARCH_WAIT_GRACE_SECONDS", "5"))
 DEEP_SEARCH_DURATION_SECONDS = int(os.getenv("DEEP_SEARCH_DURATION_SECONDS", "60"))
 DEEP_SEARCH_MIN_MATCH_SCORE = float(os.getenv("DEEP_SEARCH_MIN_MATCH_SCORE", "0.50"))
 RETRY_NOT_FOUND_BY_DEFAULT = os.getenv("RETRY_NOT_FOUND_BY_DEFAULT", "true").lower() in {"1", "true", "yes", "on"}
-DEFAULT_MAX_PARALLEL_SEARCHES = max(1, min(2, int(os.getenv("MAX_PARALLEL_SEARCHES", "2"))))
+MAX_PARALLEL_SEARCHES_LIMIT = 20
+DEFAULT_MAX_PARALLEL_SEARCHES = max(1, min(MAX_PARALLEL_SEARCHES_LIMIT, int(os.getenv("MAX_PARALLEL_SEARCHES", "5"))))
 SEARCH_START_INTERVAL_SECONDS = max(1.0, float(os.getenv("SEARCH_START_INTERVAL_SECONDS", "1")))
 
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "1"))
@@ -63,7 +64,7 @@ class SongList(BaseModel):
     search_duration_seconds: int = Field(default=SEARCH_DURATION_SECONDS, ge=5, le=180)
     retry_not_found: bool = Field(default=RETRY_NOT_FOUND_BY_DEFAULT)
     deep_search_duration_seconds: int = Field(default=DEEP_SEARCH_DURATION_SECONDS, ge=10, le=300)
-    max_parallel_searches: int = Field(default=DEFAULT_MAX_PARALLEL_SEARCHES, ge=1, le=2)
+    max_parallel_searches: int = Field(default=DEFAULT_MAX_PARALLEL_SEARCHES, ge=1, le=MAX_PARALLEL_SEARCHES_LIMIT)
 
 
 class LastFMAuthStart(BaseModel):
@@ -437,7 +438,7 @@ async def process_song(
     )
 
     try:
-        # Parallel mode is capped at two (the slskd client-side limit).
+        # The batch semaphore enforces the configured active-search limit.
         # A serial confirmation pass is used for first-pass misses because
         # slskd can occasionally complete concurrent searches with zero results.
         semaphore = (
@@ -1253,7 +1254,7 @@ async def queue_songs(request: SongList):
         "cancel_requested": False,
         "cancel_event": asyncio.Event(),
         "active_searches": set(),
-        "search_semaphore": asyncio.Semaphore(min(request.max_parallel_searches, 2)),
+        "search_semaphore": asyncio.Semaphore(request.max_parallel_searches),
         "serial_search_semaphore": asyncio.Semaphore(1),
         "phase": "queued",
         "retry_count": 0,
@@ -1262,7 +1263,7 @@ async def queue_songs(request: SongList):
             "search_duration_seconds": request.search_duration_seconds,
             "retry_not_found": request.retry_not_found,
             "deep_search_duration_seconds": request.deep_search_duration_seconds,
-            "max_parallel_searches": min(request.max_parallel_searches, 2),
+            "max_parallel_searches": request.max_parallel_searches,
             "search_start_interval_seconds": SEARCH_START_INTERVAL_SECONDS,
         },
         "results": [
