@@ -200,6 +200,23 @@ const labels={pending:"Ожидает",searching:"Поиск",adding:"Добав
 const phases={queued:"Ожидание запуска",initial_search:"Первичный поиск",serial_retry:"Перепроверка пустых результатов по одному",deep_search:"Повторный расширенный поиск ненайденных треков",cancelling:"Останавливаем активные поиски…",cancelled_waiting_for_transfers:"Поиск прерван; уже добавленные загрузки продолжаются",waiting_for_transfers:"Поиск закончен; ожидаем завершения загрузок",finished:"Обработка завершена",cancelled:"Поиск прерван"};
 let timer=null;
 let activeBatchId=null;
+
+function activateTab(name){
+  const selectedTab=["download","lastfm"].includes(name)?name:"download";
+  document.querySelectorAll(".tab-button").forEach(button=>{
+    const selected=button.dataset.tab===selectedTab;
+    button.classList.toggle("active",selected);
+    button.setAttribute("aria-selected",String(selected));
+    button.tabIndex=selected?0:-1;
+  });
+  document.querySelectorAll(".tab-panel").forEach(panel=>{
+    panel.hidden=panel.id!=="tab-"+selectedTab;
+  });
+}
+document.querySelectorAll(".tab-button").forEach(button=>{
+  button.addEventListener("click",()=>activateTab(button.dataset.tab));
+});
+activateTab("download");
 function parseSongs(){
   return $("songs").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{
     let parts=line.split(/\s+[—–-]\s+/);
