@@ -4,7 +4,7 @@ services:
     container_name: slskd-song-queue
     # Share the already-running Gluetun network namespace.
     # Port publishing and Docker networks are configured on Gluetun itself.
-    network_mode: "container:gluetun"
+    network_mode: "container:${GLUETUN_CONTAINER:-gluetun}"
     environment:
       SLSKD_URL: "${SLSKD_URL:-http://slskd:5030}"
       SLSKD_API_KEY: "${SLSKD_API_KEY}"
