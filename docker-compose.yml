@@ -2,12 +2,12 @@ services:
   song-queue:
     build: .
     container_name: slskd-song-queue
-    ports:
-      - "8080:8080"
+    # Share the already-running Gluetun network namespace.
+    # Port publishing and Docker networks are configured on Gluetun itself.
+    network_mode: "container:gluetun"
     environment:
       SLSKD_URL: "${SLSKD_URL:-http://slskd:5030}"
       SLSKD_API_KEY: "${SLSKD_API_KEY}"
-      LASTFM_PROXY: "${LASTFM_PROXY:-}"
       SEARCH_DURATION_SECONDS: "${SEARCH_DURATION_SECONDS:-25}"
       SEARCH_WAIT_GRACE_SECONDS: "${SEARCH_WAIT_GRACE_SECONDS:-5}"
       DEEP_SEARCH_DURATION_SECONDS: "${DEEP_SEARCH_DURATION_SECONDS:-60}"
@@ -22,11 +22,4 @@ services:
       SLSKD_429_RETRIES: "${SLSKD_429_RETRIES:-5}"
       TRANSFER_POLL_INTERVAL: "${TRANSFER_POLL_INTERVAL:-2}"
       TRANSFER_MONITOR_HOURS: "${TRANSFER_MONITOR_HOURS:-24}"
-    networks:
-      - slskd
     restart: unless-stopped
-
-networks:
-  slskd:
-    external: true
-    name: "${SLSKD_NETWORK:-slskd_default}"
