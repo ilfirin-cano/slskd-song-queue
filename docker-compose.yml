@@ -22,4 +22,6 @@ services:
       SLSKD_429_RETRIES: "${SLSKD_429_RETRIES:-5}"
       TRANSFER_POLL_INTERVAL: "${TRANSFER_POLL_INTERVAL:-2}"
       TRANSFER_MONITOR_HOURS: "${TRANSFER_MONITOR_HOURS:-24}"
+    volumes:
+      - ./data:/data
     restart: unless-stopped
