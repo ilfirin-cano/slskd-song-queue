@@ -131,31 +131,45 @@ input[type=text],input[type=password],.field select{width:100%;background:#11151
           <option value="weekly_track_chart">Недельный чарт пользователя</option>
           <option value="global_chart">Глобальный чарт Last.fm</option>
           <option value="country_chart">Чарт по стране</option>
+          <option value="user_recent_tracks">Недавно прослушанное пользователем</option>
+          <option value="user_top_artists">Топ исполнителей пользователя</option>
+          <option value="user_top_albums">Топ альбомов пользователя</option>
+          <option value="user_top_tags">Любимые музыкальные теги пользователя</option>
+          <option value="user_library_artists">Исполнители из библиотеки пользователя</option>
+          <option value="user_personal_tags">Композиции / альбомы / исполнители по личному тегу</option>
+          <option value="global_top_artists">Глобальный чарт исполнителей</option>
+          <option value="global_top_tags">Глобальный чарт тегов</option>
+          <option value="country_top_artists">Популярные исполнители по стране</option>
+          <option value="tag_top_artists">Исполнители по тегу / жанру</option>
+          <option value="tag_top_albums">Альбомы по тегу / жанру</option>
+          <option value="similar_tags">Похожие музыкальные теги</option>
+          <option value="artist_top_albums">Популярные альбомы исполнителя</option>
+          <option value="album_tracks">Трек-лист конкретного альбома</option>
         </select>
       </div>
       <div class="field">
         <label for="lastfmCount">Количество результатов</label>
         <input id="lastfmCount" type="number" min="1" max="100" step="1" value="30">
-        <span class="muted">От 1 до 100. Для нескольких исходных треков лимит применяется к каждому.</span>
+        <span class="muted">От 1 до 200 (у некоторых методов Last.fm лимит ниже). Для нескольких исходных треков лимит применяется к каждому.</span>
       </div>
       <div class="field mode-field" data-modes="similar_tracks">
         <label for="lastfmSeeds">Исходные композиции</label>
         <textarea class="lf-seeds" id="lastfmSeeds" placeholder="Massive Attack — Teardrop&#10;Portishead — Roads"></textarea>
         <span class="muted">Одна строка на композицию, формат «Исполнитель — Название», максимум 10 строк.</span>
       </div>
-      <div class="field mode-field" data-modes="artist_top_tracks,similar_artists">
+      <div class="field mode-field" data-modes="artist_top_tracks,similar_artists,artist_top_albums,album_tracks">
         <label for="lastfmArtist">Исполнитель</label>
         <input id="lastfmArtist" type="text" placeholder="Например, Radiohead">
       </div>
-      <div class="field mode-field" data-modes="tag_top_tracks">
+      <div class="field mode-field" data-modes="tag_top_tracks,tag_top_artists,tag_top_albums,similar_tags,user_personal_tags">
         <label for="lastfmTag">Тег / жанр</label>
         <input id="lastfmTag" type="text" placeholder="Например, trip-hop, shoegaze, jazz">
       </div>
-      <div class="field mode-field" data-modes="user_top_tracks,loved_tracks,weekly_track_chart">
+      <div class="field mode-field" data-modes="user_top_tracks,loved_tracks,weekly_track_chart,user_recent_tracks,user_top_artists,user_top_albums,user_top_tags,user_library_artists,user_personal_tags">
         <label for="lastfmUsername">Имя пользователя Last.fm</label>
         <input id="lastfmUsername" type="text" placeholder="Например, rj">
       </div>
-      <div class="field mode-field" data-modes="user_top_tracks">
+      <div class="field mode-field" data-modes="user_top_tracks,user_top_artists,user_top_albums">
         <label for="lastfmPeriod">Период статистики</label>
         <select id="lastfmPeriod">
           <option value="overall">За всё время</option>
@@ -166,9 +180,21 @@ input[type=text],input[type=password],.field select{width:100%;background:#11151
           <option value="7day">7 дней</option>
         </select>
       </div>
-      <div class="field mode-field" data-modes="country_chart">
+      <div class="field mode-field" data-modes="country_chart,country_top_artists">
         <label for="lastfmCountry">Страна (название на английском)</label>
         <input id="lastfmCountry" type="text" value="Netherlands" placeholder="Например, Germany">
+      </div>
+      <div class="field mode-field" data-modes="album_tracks">
+        <label for="lastfmAlbum">Название альбома</label>
+        <input id="lastfmAlbum" type="text" placeholder="Например, Mezzanine">
+      </div>
+      <div class="field mode-field" data-modes="user_personal_tags">
+        <label for="lastfmTaggingType">Что искать по личному тегу</label>
+        <select id="lastfmTaggingType">
+          <option value="track">Треки</option>
+          <option value="album">Альбомы</option>
+          <option value="artist">Исполнители</option>
+        </select>
       </div>
     </div>
     <div class="lf-actions">
@@ -369,6 +395,11 @@ function lastfmMeta(item){
   if(item.match!==undefined&&item.match!==null&&item.match!=="")bits.push("Сходство: "+esc(item.match));
   if(item.playcount!==undefined&&item.playcount!==null)bits.push("Прослушиваний: "+esc(item.playcount));
   if(item.listeners!==undefined&&item.listeners!==null)bits.push("Слушателей: "+esc(item.listeners));
+  if(item.count!==undefined&&item.count!==null)bits.push("Количество: "+esc(item.count));
+  if(item.date)bits.push("Дата: "+esc(item.date));
+  if(item.nowplaying)bits.push("Сейчас играет");
+  if(item.loved==="1"||item.loved===1||item.loved===true)bits.push("В любимых");
+  if(item.album)bits.push("Альбом: "+esc(item.album));
   return bits.join(" · ")||"";
 }
 function renderLastfmResults(data){
@@ -378,12 +409,14 @@ function renderLastfmResults(data){
   $("lastfmResultTitle").textContent=data.label||"Результаты Last.fm";
   $("lastfmResultCount").textContent=lastfmItems.length+" результатов";
   $("lastfmRows").innerHTML=lastfmItems.map((item,index)=>{
-    const name=item.kind==="artist"?(item.name||""):(item.artist||"")+" — "+(item.title||"");
+    let name="";
+    if(item.kind==="artist"||item.kind==="tag")name=item.name||"";
+    else name=(item.artist||"")+" — "+(item.title||"");
     const meta=lastfmMeta(item);
     const selectable=item.kind==="track"&&item.artist&&item.title;
     return "<tr><td>"+(selectable?"<input class='track-check' type='checkbox' data-index='"+index+"' checked aria-label='Выбрать трек'>":"—")+"</td><td>"+(index+1)+"</td><td>"+esc(name)+"</td><td><div class='lf-meta'>"+meta+"</div></td></tr>";
   }).join("");
-  $("addLastfmTracks").hidden=lastfmKind!=="track"||!lastfmItems.some(x=>x.kind==="track");
+  $("addLastfmTracks").hidden=!lastfmItems.some(x=>x.kind==="track"&&x.artist&&x.title);
 }
 $("getLastfm").addEventListener("click",async()=>{
   $("lastfmError").textContent="";
@@ -399,20 +432,25 @@ $("getLastfm").addEventListener("click",async()=>{
     if(!payload.seed_tracks.length){$("lastfmError").textContent="Введите хотя бы одну композицию в формате «Исполнитель — Название».";return;}
     if(payload.seed_tracks.length>10){$("lastfmError").textContent="За один запрос можно указать не более 10 исходных композиций.";return;}
   }
-  if(["artist_top_tracks","similar_artists"].includes(mode)){
+  if(["artist_top_tracks","similar_artists","artist_top_albums","album_tracks"].includes(mode)){
     payload.artist=$("lastfmArtist").value.trim();
     if(!payload.artist){$("lastfmError").textContent="Укажите исполнителя.";return;}
   }
-  if(mode==="tag_top_tracks"){
+  if(mode==="album_tracks"){
+    payload.album=$("lastfmAlbum").value.trim();
+    if(!payload.album){$("lastfmError").textContent="Укажите альбом.";return;}
+  }
+  if(["tag_top_tracks","tag_top_artists","tag_top_albums","similar_tags","user_personal_tags"].includes(mode)){
     payload.tag=$("lastfmTag").value.trim();
     if(!payload.tag){$("lastfmError").textContent="Укажите тег или жанр.";return;}
   }
-  if(["user_top_tracks","loved_tracks","weekly_track_chart"].includes(mode)){
+  if(mode==="user_personal_tags")payload.tagging_type=$("lastfmTaggingType").value;
+  if(["user_top_tracks","loved_tracks","weekly_track_chart","user_recent_tracks","user_top_artists","user_top_albums","user_top_tags","user_library_artists","user_personal_tags"].includes(mode)){
     payload.username=$("lastfmUsername").value.trim();
     if(!payload.username){$("lastfmError").textContent="Укажите имя пользователя Last.fm.";return;}
   }
-  if(mode==="user_top_tracks")payload.period=$("lastfmPeriod").value;
-  if(mode==="country_chart"){
+  if(["user_top_tracks","user_top_artists","user_top_albums"].includes(mode))payload.period=$("lastfmPeriod").value;
+  if(["country_chart","country_top_artists"].includes(mode)){
     payload.country=$("lastfmCountry").value.trim();
     if(!payload.country){$("lastfmError").textContent="Укажите страну на английском языке.";return;}
   }
