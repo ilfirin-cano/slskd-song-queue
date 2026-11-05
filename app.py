@@ -44,7 +44,7 @@ SLSKD_POST_LOCK = asyncio.Lock()
 LAST_SLSKD_POST_AT = 0.0
 ALLOWED_EXTENSIONS = {".mp3", ".flac"}
 
-app = FastAPI(title="slskd Song Queue", version="2.6.0")
+app = FastAPI(title="slskd Song Queue", version="2.7.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 BATCHES = {}
 
@@ -847,9 +847,20 @@ async def lastfm_request(client, params, *, api_secret=None):
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPStatusError as exc:
+        response_body = exc.response.text.strip()
+        try:
+            error_payload = exc.response.json()
+            if isinstance(error_payload, dict) and error_payload.get("error") is not None:
+                response_body = (
+                    f"API {error_payload.get('error')}: "
+                    f"{error_payload.get('message') or 'ошибка API'}"
+                )
+        except ValueError:
+            pass
+        diagnostic = f": {response_body[:400]}" if response_body else ""
         raise HTTPException(
             status_code=502,
-            detail=f"Last.fm вернул HTTP {exc.response.status_code}",
+            detail=f"Last.fm вернул HTTP {exc.response.status_code}{diagnostic}",
         ) from exc
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(
@@ -952,7 +963,7 @@ def finalize_recommendations(bucket, count):
 async def lastfm_auth_token(request: LastFMAuthStart):
     async with httpx.AsyncClient(
         base_url="https://ws.audioscrobbler.com",
-        headers={"User-Agent": "slskd-song-queue/2.6.0"},
+        headers={"User-Agent": "slskd-song-queue/2.7.0"},
         timeout=25,
     ) as client:
         payload = await lastfm_request(
@@ -1046,14 +1057,12 @@ async def lastfm_recommendations(request: LastFMRequest):
                     {"user": username, "limit": 100, "extended": 1},
                 )
                 raw_history = lastfm_as_list((payload.get("recenttracks") or {}).get("track"))
-                seed_title = "последних прослушиваний"
             else:
                 payload = await lastfm_public_call(
                     client, api_key, "user.getTopTracks",
                     {"user": username, "period": history_period, "limit": 100},
                 )
                 raw_history = lastfm_as_list((payload.get("toptracks") or {}).get("track"))
-                seed_title = f"топа за {history_period}"
 
             track_frequency = {}
             artist_frequency = {}
@@ -1149,20 +1158,6 @@ async def lastfm_recommendations(request: LastFMRequest):
             for similar_artist in sorted(
                 similar_artists.values(),
                 key=lambda item: item["match"],
-                reverse=True,
-            )[:6]:
-                await add_artist_top_tracks(
-                    client, api_key, similar_artist["name"], bucket,
-                    source=similar_artist["source"],
-                    weight=similar_artist["match"],
-                    limit=4,
-                )
-
-            for entry in bucket.values():
-                if (normalize(entry["artist"]), normalize(entry["title"])) in heard_keys:
-                    continue
-
- key=lambda item: item["match"],
                 reverse=True,
             )[:6]:
                 await add_artist_top_tracks(
