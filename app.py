@@ -1043,7 +1043,7 @@ async def lastfm_recommendations(request: LastFMRequest):
     if no        if request.mode in {"personal_recommended_tracks", "history_mix"}:
             personal_recommendations = request.mode == "personal_recommended_tracks"
             if personal_recommendations:
-                label = f"Персональные рекомендации на основе прослушиваний {username}"
+                label = f"Персональные рекомендации {username} по топ-трекам за 3 месяца"
                 history_basis = "top"
                 history_period = "3month"
             else:
@@ -1167,9 +1167,9 @@ async def lastfm_recommendations(request: LastFMRequest):
                     limit=4,
                 )
 
-            for entry in bucket.values():
+            for key, entry in list(bucket.items()):
                 if (normalize(entry["artist"]), normalize(entry["title"])) in heard_keys:
-                    continue
+                    bucket.pop(key, None)
 
         elif request.mode == "artist_discovery":
             if not request.artist:
