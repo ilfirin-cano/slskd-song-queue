@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field
 
 SLSKD_URL = os.getenv("SLSKD_URL", "http://slskd:5030").rstrip("/")
 API_KEY = os.getenv("SLSKD_API_KEY", "")
-LASTFM_PROXY = os.getenv("LASTFM_PROXY", "").strip() or None
 
 LEGACY_SEARCH_TIMEOUT_MS = int(os.getenv("SEARCH_TIMEOUT_MS", "25000"))
 SEARCH_DURATION_SECONDS = int(os.getenv(
@@ -42,7 +41,7 @@ SLSKD_POST_LOCK = asyncio.Lock()
 LAST_SLSKD_POST_AT = 0.0
 ALLOWED_EXTENSIONS = {".mp3", ".flac"}
 
-app = FastAPI(title="slskd Song Queue", version="2.3.0")
+app = FastAPI(title="slskd Song Queue", version="2.4.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 BATCHES = {}
 
@@ -743,8 +742,7 @@ async def lastfm_recommendations(request: LastFMRequest):
     label = ""
     async with httpx.AsyncClient(
         base_url="https://ws.audioscrobbler.com",
-        proxy=LASTFM_PROXY,
-        headers={"User-Agent": "slskd-song-queue/2.3.0"},
+        headers={"User-Agent": "slskd-song-queue/2.4.0"},
         timeout=25,
     ) as client:
         if mode == "similar_tracks":
