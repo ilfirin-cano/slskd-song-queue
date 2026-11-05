@@ -813,7 +813,7 @@ async def lastfm_recommendations(request: LastFMRequest):
     result_kind = "track"
     async with httpx.AsyncClient(
         base_url="https://ws.audioscrobbler.com",
-        headers={"User-Agent": "slskd-song-queue/2.4.0"},
+        headers={"User-Agent": "slskd-song-queue/2.5.0"},
         timeout=25,
     ) as client:
         if mode == "similar_tracks":
