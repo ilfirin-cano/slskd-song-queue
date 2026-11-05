@@ -103,7 +103,7 @@ docker compose up -d --build --force-recreate
 
 Поддерживаются четыре сценария:
 
-- **Персональные рекомендации Last.fm.** Используется авторизованный метод `user.getRecommendedArtists`; для рекомендованных исполнителей приложение получает их популярные треки, чтобы результат можно было сразу перенести в очередь slskd.
+- **Персональные рекомендации Last.fm.** На основе топа ваших треков за последние 3 месяца приложение ищет похожие композиции через `track.getSimilar`, близких исполнителей через `artist.getSimilar` и добавляет их популярные треки. Уже прослушанные треки исключаются. Используются документированные методы API; отдельный `user.getRecommendedArtists` не вызывается.
 - **Похожие на мои прослушивания.** Берутся последние прослушивания либо топ-треки за выбранный период. Для нескольких часто повторяющихся треков запрашиваются похожие композиции, а для характерных исполнителей — похожие артисты и их треки. Уже прослушанные композиции исключаются. Кандидаты объединяются, дубликаты удаляются, а повторы рекомендаций от разных исходных треков повышают позицию.
 - **По исполнителю.** Last.fm подбирает похожих исполнителей, затем приложение собирает их популярные треки.
 - **По жанру / тегу.** По популярным исполнителям выбранного тега находятся близкие артисты, после чего собираются их треки. Это рекомендация по музыкальному окружению тега, а не просто выдача глобального чарта.
@@ -118,7 +118,7 @@ API key, Shared Secret и session key сохраняются сервером в
 
 Session key может быть отозван в настройках Last.fm. Если запрос персональных рекомендаций вернул ошибку авторизации, отключите и подключите аккаунт заново.
 
-Документация Last.fm: [desktop authentication](https://www.last.fm/api/desktopauth), [track.getSimilar](https://www.last.fm/api/show/track.getSimilar), [artist.getSimilar](https://www.last.fm/api/show/artist.getSimilar), [user.getRecentTracks](https://www.last.fm/api/show/user.getRecentTracks).
+Документация Last.fm: [desktop authentication](https://www.last.fm/api/desktopauth), [track.getSimilar](https://www.last.fm/api/show/track.getSimilar), [artist.getSimilar](https://www.last.fm/api/show/artist.getSimilar), [user.getRecentTracks](https://www.last.fm/api/show/user.getRecentTracks), [user.getTopTracks](https://www.last.fm/api/show/user.getTopTracks).
 ## API
 
 - GET /health — состояние сервиса.
