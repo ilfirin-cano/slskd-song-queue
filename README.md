@@ -4,7 +4,7 @@
 
 ## Сетевая схема: весь трафик через Gluetun
 
-`song-queue` использует `network_mode: "container:gluetun"`: его исходящий сетевой трафик идёт через сетевой namespace и VPN/firewall уже запущенного контейнера Gluetun. Сам Gluetun должен быть запущен до запуска этого Compose-проекта.
+`song-queue` использует `network_mode: "container:${GLUETUN_CONTAINER:-gluetun}"`: его исходящий сетевой трафик идёт через сетевой namespace и VPN/firewall уже запущенного контейнера Gluetun. Сам Gluetun должен быть запущен до запуска этого Compose-проекта. Значение `GLUETUN_CONTAINER` — точное имя контейнера; по умолчанию `gluetun`. Если в `docker ps` он называется `gluetune`, укажи `GLUETUN_CONTAINER=gluetune` в `.env`.
 
 Поскольку `song-queue` разделяет сеть Gluetun, в его Compose-файле больше нет `ports:` и `networks:`. Публикация веб-порта и подключение к Docker-сети slskd настраиваются на сервисе Gluetun.
 
@@ -64,7 +64,7 @@ networks:
 cp .env.example .env
 ~~~
 
-Задайте `SLSKD_URL` (обычно `http://slskd:5030`) и `SLSKD_API_KEY`. `slskd` должен быть доступен по DNS-имени из Docker-сети, подключённой к Gluetun.
+Задайте `GLUETUN_CONTAINER` по фактическому имени из `docker ps`, `SLSKD_URL` (обычно `http://slskd:5030`) и `SLSKD_API_KEY`. `slskd` должен быть доступен по DNS-имени из Docker-сети, подключённой к Gluetun.
 
 Обновите и запустите приложение:
 
