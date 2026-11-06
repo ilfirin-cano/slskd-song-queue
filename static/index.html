@@ -85,6 +85,7 @@ input[type=text],input[type=password],.field select{width:100%;background:#11151
       <button id="cancel" class="danger" disabled>Прервать</button>
     </div>
   </div>
+  <p class="muted" id="submitHint">Повторный запуск остановит текущий поиск и запустит новый список. Уже начатые загрузки продолжатся.</p>
   <div class="error" id="error"></div>
 </section>
 <section class="card" id="results" hidden>
@@ -267,17 +268,20 @@ function render(data){
 async function poll(batchId){
   try{
     const response=await fetch("/batches/"+encodeURIComponent(batchId));
+    if(batchId!==activeBatchId)return;
     if(!response.ok) throw new Error("HTTP "+response.status);
-    const data=await response.json();render(data);
+    const data=await response.json();
+    if(batchId!==activeBatchId)return;
+    render(data);
     if(data.finished){
       clearInterval(timer);timer=null;
-      activeBatchId=null;
-      $("submit").disabled=false;
+      if(activeBatchId===batchId)activeBatchId=null;
       $("cancel").disabled=true;
     }
   }catch(err){
+    if(batchId!==activeBatchId)return;
     $("error").textContent="Не удалось получить статус: "+err.message;
-    clearInterval(timer);timer=null;$("submit").disabled=false;
+    clearInterval(timer);timer=null;
   }
 }
 $("songs").addEventListener("input",()=>{$("count").textContent=parseSongs().length+" композиций";});
@@ -291,8 +295,13 @@ $("submit").addEventListener("click",async()=>{
   if(!Number.isInteger(searchDuration)||searchDuration<5||searchDuration>180){$("error").textContent="Длительность первого поиска должна быть от 5 до 180 секунд.";return;}
   if(!Number.isInteger(deepSearchDuration)||deepSearchDuration<10||deepSearchDuration>300){$("error").textContent="Длительность повторного поиска должна быть от 10 до 300 секунд.";return;}
   if(!Number.isInteger(maxParallelSearches)||maxParallelSearches<1||maxParallelSearches>20){$("error").textContent="Число параллельных поисков должно быть от 1 до 20.";return;}
+
+  const previousBatchId=activeBatchId;
+  if(timer){clearInterval(timer);timer=null;}
+  activeBatchId=null;
   $("submit").disabled=true;
   $("cancel").disabled=true;
+  $("submitHint").textContent="Останавливаем предыдущий поиск (если он ещё идёт) и запускаем новый список…";
   try{
     const response=await fetch("/songs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       songs,
@@ -304,10 +313,21 @@ $("submit").addEventListener("click",async()=>{
     const data=await response.json();
     if(!response.ok) throw new Error(data.detail||("HTTP "+response.status));
     activeBatchId=data.batch_id;
-    if(timer)clearInterval(timer);
     await poll(data.batch_id);
     if(activeBatchId) timer=setInterval(()=>poll(data.batch_id),1500);
-  }catch(err){$("error").textContent=err.message;$("submit").disabled=false;$("cancel").disabled=true;}
+  }catch(err){
+    $("error").textContent=err.message;
+    if(previousBatchId){
+      activeBatchId=previousBatchId;
+      await poll(previousBatchId);
+      if(activeBatchId)timer=setInterval(()=>poll(previousBatchId),1500);
+    }else{
+      $("cancel").disabled=true;
+    }
+  }finally{
+    $("submit").disabled=false;
+    $("submitHint").textContent="Повторный запуск остановит текущий поиск и запустит новый список. Уже начатые загрузки продолжатся.";
+  }
 });
 $("cancel").addEventListener("click",async()=>{
   const batchId=activeBatchId;
