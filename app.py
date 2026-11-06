@@ -48,6 +48,8 @@ ALLOWED_EXTENSIONS = {".mp3", ".flac"}
 app = FastAPI(title="slskd Song Queue", version="2.8.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 BATCHES = {}
+CURRENT_BATCH_ID = None
+BATCH_START_LOCK = asyncio.Lock()
 
 
 class BatchCancelled(Exception):
@@ -572,6 +574,7 @@ async def process_song(
 
 
 async def run_batch(batch_id):
+    global CURRENT_BATCH_ID
     batch = BATCHES[batch_id]
     settings = batch["settings"]
     monitor_tasks = []
@@ -647,12 +650,18 @@ async def run_batch(batch_id):
             if batch["cancel_event"].is_set()
             else "waiting_for_transfers"
         )
+        if CURRENT_BATCH_ID == batch_id:
+            CURRENT_BATCH_ID = None
+        batch["search_done_event"].set()
         if monitor_tasks:
             await asyncio.gather(*monitor_tasks, return_exceptions=True)
     finally:
         batch["search_finished"] = True
         batch["finished"] = True
         batch["phase"] = "cancelled" if batch["cancel_event"].is_set() else "finished"
+        if CURRENT_BATCH_ID == batch_id:
+            CURRENT_BATCH_ID = None
+        batch["search_done_event"].set()
         for item in batch["results"]:
             item.pop("song_obj", None)
 
@@ -745,6 +754,21 @@ def lastfm_tag_item(raw, rank):
         "url": raw.get("url"),
     }
 
+def lastfm_http_error_detail(response):
+    body = response.text.strip()
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            if payload.get("error") is not None:
+                body = f"API {payload.get('error')}: {payload.get('message') or 'ошибка API'}"
+            elif payload.get("message"):
+                body = str(payload["message"])
+    except (ValueError, TypeError):
+        pass
+    diagnostic = f": {body[:400]}" if body else ""
+    return f"Last.fm вернул HTTP {response.status_code}{diagnostic}"
+
+
 async def lastfm_call(client, api_key: str, method: str, params: dict):
     query = {
         "method": method,
@@ -759,7 +783,7 @@ async def lastfm_call(client, api_key: str, method: str, params: dict):
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Last.fm вернул HTTP {exc.response.status_code}",
+            detail=lastfm_http_error_detail(exc.response),
         ) from exc
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(
@@ -839,7 +863,7 @@ async def lastfm_request(client, params, *, api_secret=None):
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Last.fm вернул HTTP {exc.response.status_code}",
+            detail=lastfm_http_error_detail(exc.response),
         ) from exc
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(
@@ -1244,44 +1268,66 @@ async def health():
 
 @app.post("/songs")
 async def queue_songs(request: SongList):
+    global CURRENT_BATCH_ID
     if not API_KEY:
         raise HTTPException(status_code=500, detail="SLSKD_API_KEY is not configured")
 
-    batch_id = str(uuid.uuid4())
-    BATCHES[batch_id] = {
-        "finished": False,
-        "search_finished": False,
-        "cancel_requested": False,
-        "cancel_event": asyncio.Event(),
-        "active_searches": set(),
-        "search_semaphore": asyncio.Semaphore(request.max_parallel_searches),
-        "serial_search_semaphore": asyncio.Semaphore(1),
-        "phase": "queued",
-        "retry_count": 0,
-        "serial_retry_count": 0,
-        "settings": {
-            "search_duration_seconds": request.search_duration_seconds,
-            "retry_not_found": request.retry_not_found,
-            "deep_search_duration_seconds": request.deep_search_duration_seconds,
-            "max_parallel_searches": request.max_parallel_searches,
-            "search_start_interval_seconds": SEARCH_START_INTERVAL_SECONDS,
-        },
-        "results": [
-            {
-                "song": song.model_dump(),
-                "song_obj": song,
-                "status": "pending",
-                "message": "Ожидает обработки",
-                "search_attempt": 0,
-                "percent": 0,
-                "bytes_transferred": 0,
-                "size": 0,
-            }
-            for song in request.songs
-        ],
-    }
-    asyncio.create_task(run_batch(batch_id))
-    return {"batch_id": batch_id, "submitted": len(request.songs)}
+    # Do not overlap the old search lifecycle with its replacement. Existing
+    # transfers are deliberately left running and are not cancelled.
+    async with BATCH_START_LOCK:
+        previous_batch = BATCHES.get(CURRENT_BATCH_ID) if CURRENT_BATCH_ID else None
+        if previous_batch and not previous_batch["search_finished"]:
+            previous_batch["cancel_requested"] = True
+            previous_batch["phase"] = "cancelling"
+            previous_batch["cancel_event"].set()
+            try:
+                await asyncio.wait_for(
+                    previous_batch["search_done_event"].wait(),
+                    timeout=120,
+                )
+            except asyncio.TimeoutError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Не удалось дождаться остановки предыдущего поиска. Новый поиск не запущен, чтобы не превысить лимит параллельности slskd.",
+                ) from exc
+
+        batch_id = str(uuid.uuid4())
+        BATCHES[batch_id] = {
+            "finished": False,
+            "search_finished": False,
+            "cancel_requested": False,
+            "cancel_event": asyncio.Event(),
+            "search_done_event": asyncio.Event(),
+            "active_searches": set(),
+            "search_semaphore": asyncio.Semaphore(request.max_parallel_searches),
+            "serial_search_semaphore": asyncio.Semaphore(1),
+            "phase": "queued",
+            "retry_count": 0,
+            "serial_retry_count": 0,
+            "settings": {
+                "search_duration_seconds": request.search_duration_seconds,
+                "retry_not_found": request.retry_not_found,
+                "deep_search_duration_seconds": request.deep_search_duration_seconds,
+                "max_parallel_searches": request.max_parallel_searches,
+                "search_start_interval_seconds": SEARCH_START_INTERVAL_SECONDS,
+            },
+            "results": [
+                {
+                    "song": song.model_dump(),
+                    "song_obj": song,
+                    "status": "pending",
+                    "message": "Ожидает обработки",
+                    "search_attempt": 0,
+                    "percent": 0,
+                    "bytes_transferred": 0,
+                    "size": 0,
+                }
+                for song in request.songs
+            ],
+        }
+        CURRENT_BATCH_ID = batch_id
+        asyncio.create_task(run_batch(batch_id))
+        return {"batch_id": batch_id, "submitted": len(request.songs)}
 
 
 @app.post("/batches/{batch_id}/cancel")
