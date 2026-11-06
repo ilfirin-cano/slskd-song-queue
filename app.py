@@ -45,7 +45,7 @@ SLSKD_POST_LOCK = asyncio.Lock()
 LAST_SLSKD_POST_AT = 0.0
 ALLOWED_EXTENSIONS = {".mp3", ".flac"}
 
-app = FastAPI(title="slskd Song Queue", version="2.8.0")
+app = FastAPI(title="slskd Song Queue", version="2.9.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 BATCHES = {}
 CURRENT_BATCH_ID = None
@@ -966,7 +966,7 @@ def finalize_recommendations(bucket, count):
 async def lastfm_auth_token(request: LastFMAuthStart):
     async with httpx.AsyncClient(
         base_url="https://ws.audioscrobbler.com",
-        headers={"User-Agent": "slskd-song-queue/2.8.0"},
+        headers={"User-Agent": "slskd-song-queue/2.9.0"},
         timeout=25,
     ) as client:
         payload = await lastfm_request(
@@ -988,7 +988,7 @@ async def lastfm_auth_token(request: LastFMAuthStart):
 async def lastfm_auth_session(request: LastFMAuthComplete):
     async with httpx.AsyncClient(
         base_url="https://ws.audioscrobbler.com",
-        headers={"User-Agent": "slskd-song-queue/2.8.0"},
+        headers={"User-Agent": "slskd-song-queue/2.9.0"},
         timeout=25,
     ) as client:
         payload = await lastfm_request(
@@ -1055,7 +1055,7 @@ async def lastfm_recommendations(request: LastFMRequest):
 
     async with httpx.AsyncClient(
         base_url="https://ws.audioscrobbler.com",
-        headers={"User-Agent": "slskd-song-queue/2.8.0"},
+        headers={"User-Agent": "slskd-song-queue/2.9.0"},
         timeout=25,
     ) as client:
         if request.mode in {"personal_recommended_tracks", "history_mix"}:
